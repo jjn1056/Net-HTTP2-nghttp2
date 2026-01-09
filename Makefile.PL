@@ -10,7 +10,7 @@ WriteMakefile(
     NAME             => 'Net::HTTP2::nghttp2',
     VERSION_FROM     => 'lib/Net/HTTP2/nghttp2.pm',
     ABSTRACT         => 'Perl XS bindings for nghttp2 HTTP/2 library',
-    AUTHOR           => 'John Googol Napiorkowski <jjnapiork@cpan.org>',
+    AUTHOR           => 'John Napiorkowski <jjnapiork@cpan.org>',
     LICENSE          => 'perl_5',
     MIN_PERL_VERSION => '5.016',
 
@@ -24,6 +24,7 @@ WriteMakefile(
     },
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => '6.52',
+        'Alien::nghttp2'      => 0,
     },
 
     # XS configuration
@@ -43,13 +44,6 @@ WriteMakefile(
             },
             bugtracker => {
                 web => 'https://github.com/jjn1056/Net-HTTP2-nghttp2/issues',
-            },
-        },
-        prereqs => {
-            runtime => {
-                recommends => {
-                    'Alien::nghttp2' => 0,
-                },
             },
         },
     },
