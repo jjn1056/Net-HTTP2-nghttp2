@@ -73,6 +73,7 @@ Data provider callbacks receive `($stream_id, $max_length)` and return:
 | `lib/Net/HTTP2/nghttp2.pm` | Constants and XSLoader |
 | `lib/Net/HTTP2/nghttp2/Session.pm` | Session API wrapper |
 | `Makefile.PL` | Build config with nghttp2 detection |
+| `bin/h2spec-server` | Minimal HTTP/2 server for h2spec conformance testing |
 
 ## Test Structure
 
@@ -97,4 +98,15 @@ Tests require nghttp2 to be installed; they skip gracefully if unavailable.
 - `t/16-priority.t` - PRIORITY frame handling (11 subtests)
 - `t/17-client.t` - Client-side behavior (14 subtests)
 
-**Total: 110 tests** covering RFC 9113 compliance.
+### Integration Tests (DEVTESTING=1 required)
+- `t/18-tls-client.t` - TLS/ALPN integration with real server (9 subtests)
+  - Connects to nghttp2.org:443 over TLS
+  - Verifies ALPN negotiates h2
+  - Requires IO::Socket::SSL 1.56+
+
+```bash
+# Run TLS integration test
+DEVTESTING=1 prove -b t/18-tls-client.t
+```
+
+**Total: 110 unit tests + 9 integration tests** covering RFC 9113 compliance.
