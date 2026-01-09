@@ -313,6 +313,8 @@ production HTTP/2 implementations like curl, Apache, and nginx.
 
 =head1 SEE ALSO
 
+L<Alien::nghttp2> - Alien module for automatic nghttp2 installation
+
 L<https://nghttp2.org/> - nghttp2 project homepage
 
 L<https://datatracker.ietf.org/doc/html/rfc9113> - HTTP/2 RFC
