@@ -57,26 +57,12 @@ Net::HTTP2::nghttp2 - Perl XS bindings for nghttp2 HTTP/2 library
 =head1 SYNOPSIS
 
     use Net::HTTP2::nghttp2;
+    use Net::HTTP2::nghttp2::Session;
 
-    # Check if nghttp2 is available
-    if (Net::HTTP2::nghttp2->available) {
-        # Create a server session
-        my $session = Net::HTTP2::nghttp2::Session->new_server(
-            callbacks => {
-                on_begin_headers => sub { ... },
-                on_header        => sub { ... },
-                on_frame_recv    => sub { ... },
-                on_stream_close  => sub { ... },
-            },
-            user_data => $my_context,
-        );
+    # Check availability
+    die "nghttp2 not available" unless Net::HTTP2::nghttp2->available;
 
-        # Feed incoming data
-        $session->mem_recv($incoming_bytes);
-
-        # Get outgoing data
-        my $outgoing = $session->mem_send();
-    }
+    # See EXAMPLES below for complete server and client examples
 
 =head1 DESCRIPTION
 
@@ -127,6 +113,154 @@ End of stream flag.
 End of headers flag.
 
 =back
+
+=head1 EXAMPLES
+
+=head2 HTTP/2 Server (h2c - cleartext)
+
+    use IO::Socket::INET;
+    use Net::HTTP2::nghttp2;
+    use Net::HTTP2::nghttp2::Session;
+
+    my $server = IO::Socket::INET->new(
+        LocalPort => 8080,
+        Listen    => 128,
+        ReuseAddr => 1,
+    ) or die "Cannot create server: $!";
+
+    while (my $client = $server->accept) {
+        my $session = Net::HTTP2::nghttp2::Session->new_server(
+            callbacks => {
+                on_begin_headers => sub {
+                    my ($stream_id) = @_;
+                    # New request starting
+                    return 0;
+                },
+                on_header => sub {
+                    my ($stream_id, $name, $value) = @_;
+                    # Received header: :method, :path, :scheme, etc.
+                    return 0;
+                },
+                on_frame_recv => sub {
+                    my ($frame) = @_;
+                    # HEADERS frame with END_STREAM = complete request
+                    if ($frame->{type} == 1 && ($frame->{flags} & 0x1)) {
+                        $session->submit_response($frame->{stream_id},
+                            status  => 200,
+                            headers => [['content-type', 'text/plain']],
+                            body    => "Hello, HTTP/2!\n",
+                        );
+                    }
+                    return 0;
+                },
+                on_stream_close => sub {
+                    my ($stream_id, $error_code) = @_;
+                    return 0;
+                },
+            },
+        );
+
+        $session->send_connection_preface();
+
+        # I/O loop
+        while ($session->want_read || $session->want_write) {
+            # Send pending data
+            if (my $out = $session->mem_send) {
+                $client->syswrite($out);
+            }
+
+            # Read incoming data
+            my $buf;
+            last unless $client->sysread($buf, 16384);
+            $session->mem_recv($buf);
+        }
+        $client->close;
+    }
+
+=head2 HTTP/2 Client (h2 - TLS)
+
+    use IO::Socket::SSL;
+    use Net::HTTP2::nghttp2;
+    use Net::HTTP2::nghttp2::Session;
+
+    # Connect with ALPN to negotiate HTTP/2
+    my $sock = IO::Socket::SSL->new(
+        PeerHost           => 'nghttp2.org',
+        PeerPort           => 443,
+        SSL_alpn_protocols => ['h2'],
+    ) or die "Connection failed: $!";
+
+    die "ALPN failed" unless $sock->alpn_selected eq 'h2';
+
+    my %response;
+    my $session = Net::HTTP2::nghttp2::Session->new_client(
+        callbacks => {
+            on_header => sub {
+                my ($stream_id, $name, $value) = @_;
+                $response{headers}{$name} = $value;
+                return 0;
+            },
+            on_data_chunk_recv => sub {
+                my ($stream_id, $data) = @_;
+                $response{body} .= $data;
+                return 0;
+            },
+            on_stream_close => sub {
+                my ($stream_id, $error_code) = @_;
+                $response{done} = 1;
+                return 0;
+            },
+        },
+    );
+
+    $session->send_connection_preface();
+
+    # Submit GET request
+    my $stream_id = $session->submit_request(
+        method    => 'GET',
+        path      => '/',
+        scheme    => 'https',
+        authority => 'nghttp2.org',
+        headers   => [['user-agent', 'perl-nghttp2/0.001']],
+    );
+
+    # I/O loop
+    while (!$response{done} && ($session->want_read || $session->want_write)) {
+        if (my $out = $session->mem_send) {
+            $sock->syswrite($out);
+        }
+
+        my $buf;
+        last unless $sock->sysread($buf, 16384);
+        $session->mem_recv($buf);
+    }
+
+    print "Status: $response{headers}{':status'}\n";
+    print "Body: " . length($response{body}) . " bytes\n";
+
+=head2 Streaming Response
+
+    # In on_frame_recv callback, use a data provider for large responses:
+    $session->submit_response($stream_id,
+        status  => 200,
+        headers => [['content-type', 'application/octet-stream']],
+        body    => sub {
+            my ($stream_id, $max_length) = @_;
+            my $chunk = get_next_chunk($max_length);
+            my $eof = is_last_chunk() ? 1 : 0;
+            return ($chunk, $eof);
+        },
+    );
+
+    # Return undef to defer, then call resume_stream() when data ready:
+    body => sub {
+        my ($stream_id, $max_length) = @_;
+        return undef if !data_available();  # Defers
+        return (get_data(), $eof);
+    },
+
+    # Later, when data becomes available:
+    $session->resume_stream($stream_id);
 
 =head1 CONFORMANCE TESTING
 
