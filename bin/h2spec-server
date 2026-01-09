@@ -1,9 +1,6 @@
 #!/usr/bin/env perl
-# Minimal HTTP/2 server for h2spec testing (h2c - cleartext)
-#
-# Run from project root:
-#   perl -Iblib/lib -Iblib/arch t/h2spec-server.pl 9000
-#
+# PODNAME: h2spec-server
+# ABSTRACT: Minimal HTTP/2 server for conformance testing
 use strict;
 use warnings;
 use IO::Socket::INET;
@@ -178,3 +175,50 @@ sub handle_connection {
         }
     }
 }
+
+__END__
+
+=head1 NAME
+
+h2spec-server - Minimal HTTP/2 server for conformance testing
+
+=head1 SYNOPSIS
+
+    h2spec-server [port]
+
+    # Default port 8080
+    h2spec-server
+
+    # Custom port
+    h2spec-server 9000
+
+    # Run h2spec against it
+    h2spec -h localhost -p 9000
+
+=head1 DESCRIPTION
+
+A minimal HTTP/2 cleartext (h2c) server designed for testing with h2spec,
+the HTTP/2 conformance testing tool.
+
+The server responds with "200 OK" to all valid requests. It uses a
+fork-per-connection model to handle h2spec's rapid test connections.
+
+=head1 FEATURES
+
+=over 4
+
+=item * HTTP/2 cleartext (h2c) - no TLS required
+
+=item * Fork-per-connection for concurrent test handling
+
+=item * Responds to GET, HEAD, POST requests
+
+=item * Handles requests with and without body
+
+=back
+
+=head1 SEE ALSO
+
+L<Net::HTTP2::nghttp2>, L<https://github.com/summerwind/h2spec>
+
+=cut
