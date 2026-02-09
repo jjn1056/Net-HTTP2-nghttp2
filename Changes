@@ -1,5 +1,10 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.007   2026-02-09
+        - Expose NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE constant (-521);
+          returning this from on_header causes RST_STREAM on the
+          individual stream without terminating the session
+
 0.006   2026-02-09
         - Fix Session.pm to load XS bootstrap independently; using
           Net::HTTP2::nghttp2::Session directly without loading the
