@@ -1,5 +1,10 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.006   2026-02-09
+        - Fix Session.pm to load XS bootstrap independently; using
+          Net::HTTP2::nghttp2::Session directly without loading the
+          parent module first now works correctly
+
 0.005   2026-02-09
         - Add header_table_size (SETTINGS_HEADER_TABLE_SIZE) and
           max_header_list_size (SETTINGS_MAX_HEADER_LIST_SIZE) to
