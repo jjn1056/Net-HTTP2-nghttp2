@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use XSLoader;
 
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 
 XSLoader::load('Net::HTTP2::nghttp2', $VERSION);
 

@@ -1,5 +1,13 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.003   2026-02-08
+        - Support streaming body callback in submit_request() for client-side
+          bidirectional streams (e.g. Extended CONNECT / WebSocket over HTTP/2)
+        - submit_request() body parameter now accepts CODE ref in addition to
+          string; callback receives ($stream_id, $max_length) and returns
+          ($data, $eof_flag) or undef to defer
+        - Add streaming request test suite (t/20-streaming-request.t)
+
 0.002   2025-01-14
         - Add RFC 8441 (Bootstrapping WebSockets with HTTP/2) support
         - Add NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL constant (0x8)
