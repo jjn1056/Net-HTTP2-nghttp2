@@ -1,6 +1,6 @@
 Revision history for Net-HTTP2-nghttp2
 
-0.004   (unreleased)
+0.004   2026-02-08
         - submit_response() body parameter now accepts CODE ref (previously
           only data_callback parameter was supported for streaming)
         - Fix submit_data() to work correctly by reusing existing data provider
