@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use Scalar::Util qw(weaken);
+use Net::HTTP2::nghttp2;  # XS bootstrap (loads _new_server_xs etc.)
 
 # Session is implemented in XS, this is the Perl-side API wrapper
 
