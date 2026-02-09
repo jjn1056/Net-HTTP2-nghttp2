@@ -211,23 +211,147 @@ Net::HTTP2::nghttp2::Session - HTTP/2 session management
 
 Create a new server-side HTTP/2 session.
 
+Arguments:
+
+=over 4
+
+=item callbacks
+
+Hashref of callback handlers. Required callbacks: C<on_begin_headers>,
+C<on_header>, C<on_frame_recv>. Optional: C<on_data_chunk_recv>,
+C<on_stream_close>.
+
+=item user_data
+
+Optional scalar passed to callbacks.
+
+=item settings
+
+Optional hashref of initial HTTP/2 settings.
+
+=back
+
 =head2 new_client
 
     my $session = Net::HTTP2::nghttp2::Session->new_client(%args);
 
 Create a new client-side HTTP/2 session.
 
+Arguments:
+
+=over 4
+
+=item callbacks
+
+Hashref of callback handlers. Recommended: C<on_header>,
+C<on_data_chunk_recv>, C<on_stream_close>.
+
+=item user_data
+
+Optional scalar passed to callbacks.
+
+=back
+
+=head2 send_connection_preface
+
+    $session->send_connection_preface(%settings);
+
+Send HTTP/2 connection preface (SETTINGS frame). Default settings:
+C<max_concurrent_streams =E<gt> 100>, C<initial_window_size =E<gt> 65535>.
+
+Additional settings:
+
+=over 4
+
+=item enable_connect_protocol
+
+Set to 1 to advertise RFC 8441 extended CONNECT support
+(C<SETTINGS_ENABLE_CONNECT_PROTOCOL>). Required for WebSocket over HTTP/2.
+
+=back
+
 =head2 mem_recv
 
     my $consumed = $session->mem_recv($data);
 
 Feed incoming data to the session. Returns number of bytes consumed.
+Triggers registered callbacks as frames are parsed.
 
 =head2 mem_send
 
     my $data = $session->mem_send();
 
-Get outgoing data from the session. Returns bytes to send to peer.
+Get outgoing data from the session. Returns bytes to send to peer
+(empty string if nothing pending).
+
+=head2 submit_request
+
+    my $stream_id = $session->submit_request(%args);
+
+Submit an HTTP/2 request (client-side). Returns the stream ID.
+
+Arguments:
+
+=over 4
+
+=item method
+
+HTTP method. Default: C<'GET'>.
+
+=item path
+
+Request path. Default: C<'/'>.
+
+=item scheme
+
+URL scheme. Default: C<'https'>.
+
+=item authority
+
+Host authority (e.g. C<'example.com'>).
+
+=item headers
+
+Arrayref of C<[$name, $value]> pairs for additional headers (including
+pseudo-headers like C<:protocol> for RFC 8441 extended CONNECT).
+
+=item body
+
+Request body. Can be:
+
+=over 4
+
+=item C<undef> (or omitted)
+
+No body. HEADERS frame sent with END_STREAM.
+
+=item String
+
+Static body. Sent as DATA frame(s) with END_STREAM after the last frame.
+
+=item CODE ref
+
+Streaming callback for bidirectional streams. The callback receives
+C<($stream_id, $max_length)> and must return one of:
+
+=over 4
+
+=item C<($data, $eof_flag)>
+
+Send C<$data> as a DATA frame. If C<$eof_flag> is true, END_STREAM is set.
+
+=item C<undef>
+
+Defer data production. Call C<resume_stream($stream_id)> when data is ready.
+
+=back
+
+This is required for protocols that keep the stream open for bidirectional
+exchange, such as WebSocket over HTTP/2 (RFC 8441 extended CONNECT).
+
+=back
+
+=back
 
 =head2 submit_response
 
@@ -235,11 +359,48 @@ Get outgoing data from the session. Returns bytes to send to peer.
 
 Submit an HTTP/2 response on the given stream.
 
+Arguments:
+
+=over 4
+
+=item status
+
+HTTP status code. Default: C<200>.
+
+=item headers
+
+Arrayref of C<[$name, $value]> pairs.
+
+=item body
+
+Response body. Same types as C<submit_request>: C<undef> (no body),
+string (static body), or CODE ref (streaming callback with identical
+signature).
+
+=item data_callback
+
+Alternative to passing a CODE ref as C<body>. Callback with the same
+streaming signature.
+
+=item callback_data
+
+Optional user data passed as third argument to the streaming callback.
+
+=back
+
 =head2 submit_push_promise
 
     my $promised_stream_id = $session->submit_push_promise($stream_id, %args);
 
 Submit a server push promise.
+
+=head2 resume_stream
+
+    $session->resume_stream($stream_id);
+
+Resume data production for a deferred stream. Call this after a streaming
+body callback has returned C<undef> and new data is available. Works for
+both request and response streams.
 
 =head2 want_read
 
@@ -257,6 +418,43 @@ Returns true if the session has data to write.
 
     $session->resume_data($stream_id);
 
-Resume data production for a deferred stream.
+Low-level resume for deferred data production. Prefer C<resume_stream()>
+which also clears the internal deferred flag.
+
+=head1 CALLBACKS
+
+All callbacks receive positional arguments and should return 0 on success.
+
+=head2 on_begin_headers
+
+    sub { my ($stream_id, $frame_type, $flags) = @_; return 0; }
+
+Called when a new headers block begins (new stream or trailers).
+
+=head2 on_header
+
+    sub { my ($stream_id, $name, $value, $flags) = @_; return 0; }
+
+Called for each header. Pseudo-headers (C<:method>, C<:path>, C<:scheme>,
+C<:authority>, C<:status>, C<:protocol>) are delivered before regular headers.
+
+=head2 on_frame_recv
+
+    sub { my ($frame_hashref) = @_; return 0; }
+
+Called when a complete frame is received. The hashref contains: C<type>,
+C<flags>, C<stream_id>, C<length>.
+
+=head2 on_data_chunk_recv
+
+    sub { my ($stream_id, $data, $flags) = @_; return 0; }
+
+Called when body data is received on a stream.
+
+=head2 on_stream_close
+
+    sub { my ($stream_id, $error_code) = @_; return 0; }
+
+Called when a stream is closed.
 
 =cut

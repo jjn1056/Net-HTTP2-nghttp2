@@ -292,6 +292,90 @@ with a C<:protocol> pseudo-header.
     # Later, when data becomes available:
     $session->resume_stream($stream_id);
 
+=head2 Streaming Request
+
+Client-side requests also support streaming body callbacks, using the same
+callback signature as streaming responses. This is essential for bidirectional
+protocols like WebSocket over HTTP/2 (RFC 8441), where the client stream must
+remain open for ongoing data exchange.
+
+    my @send_queue;
+    my $eof = 0;
+
+    my $stream_id = $session->submit_request(
+        method    => 'POST',
+        path      => '/upload',
+        scheme    => 'https',
+        authority => 'example.com',
+        body      => sub {
+            my ($stream_id, $max_length) = @_;
+            if (@send_queue) {
+                my $chunk = shift @send_queue;
+                return ($chunk, $eof);
+            }
+            return undef;  # Defer until data available
+        },
+    );
+
+    # Later, queue data and resume:
+    push @send_queue, $data;
+    $session->resume_stream($stream_id);
+
+=head2 WebSocket over HTTP/2 (RFC 8441)
+
+RFC 8441 defines how to bootstrap WebSocket connections over HTTP/2 using the
+extended CONNECT method. The server advertises support via
+C<SETTINGS_ENABLE_CONNECT_PROTOCOL>, and the client sends an extended CONNECT
+request with a C<:protocol> pseudo-header set to C<websocket>.
+
+B<Server side> - enable the setting and detect extended CONNECT:
+
+    $session->send_connection_preface(
+        enable_connect_protocol => 1,
+    );
+
+    # In on_header callback, look for :protocol pseudo-header:
+    on_header => sub {
+        my ($stream_id, $name, $value) = @_;
+        if ($name eq ':method' && $value eq 'CONNECT') {
+            # Possible extended CONNECT
+        }
+        if ($name eq ':protocol' && $value eq 'websocket') {
+            # This is a WebSocket upgrade request
+        }
+        return 0;
+    },
+
+    # Accept with 200 (not 101) and a streaming body for server-to-client:
+    $session->submit_response($stream_id,
+        status  => 200,
+        headers => [['sec-websocket-protocol', $subprotocol]],
+        body    => sub {
+            my ($stream_id, $max_length) = @_;
+            # Return WebSocket frames to send to client
+            return undef;  # Defer until data ready
+        },
+    );
+
+B<Client side> - send extended CONNECT with streaming body:
+
+    my $stream_id = $session->submit_request(
+        method    => 'CONNECT',
+        path      => '/chat',
+        scheme    => 'https',
+        authority => 'example.com',
+        headers   => [[':protocol', 'websocket']],
+        body      => sub {
+            my ($stream_id, $max_length) = @_;
+            # Return WebSocket frames to send to server
+            return undef;  # Defer until data ready
+        },
+    );
+
+WebSocket frames (RFC 6455) are carried inside HTTP/2 DATA frames on the
+stream. Both directions remain open until one side sends a DATA frame with
+END_STREAM (by returning C<($data, 1)> from the callback).
+
 =head1 CONFORMANCE TESTING
 
 This module has been tested against h2spec (L<https://github.com/summerwind/h2spec>),
