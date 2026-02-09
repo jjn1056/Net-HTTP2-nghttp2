@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use XSLoader;
 
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 
 XSLoader::load('Net::HTTP2::nghttp2', $VERSION);
 
@@ -439,7 +439,7 @@ L<https://github.com/summerwind/h2spec> - HTTP/2 conformance testing tool
 
 =head1 AUTHOR
 
-Your Name <your@email.com>
+John Napiorkowski <jjnapiork@cpan.org>
 
 =head1 LICENSE
 

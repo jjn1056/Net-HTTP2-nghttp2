@@ -108,6 +108,10 @@ sub submit_response {
         };
         return $self->_submit_response_streaming($stream_id, \@nv, $data_cb, undef);
     }
+    elsif (ref($body) eq 'CODE') {
+        # CODE ref body - streaming callback data provider
+        return $self->_submit_response_streaming($stream_id, \@nv, $body, $cb_data);
+    }
     elsif ($data_cb) {
         # Dynamic body - use callback-based data provider
         return $self->_submit_response_streaming($stream_id, \@nv, $data_cb, $cb_data);
@@ -394,6 +398,37 @@ Optional user data passed as third argument to the streaming callback.
 
 Submit a server push promise.
 
+=head2 submit_data
+
+    $session->submit_data($stream_id, $data, $eof);
+
+Push data directly onto an existing stream. The stream must already have
+a data provider (established by C<submit_request> or C<submit_response>
+with a CODE ref or C<data_callback>). This replaces the streaming callback
+with a one-shot static body, then resumes the stream.
+
+Arguments:
+
+=over 4
+
+=item C<$stream_id>
+
+The stream to send data on.
+
+=item C<$data>
+
+The data to send. Can be C<undef> for an empty DATA frame.
+
+=item C<$eof>
+
+If true, the DATA frame will include END_STREAM, closing the stream.
+
+=back
+
+This is useful when you have data available outside the streaming callback
+context and want to push it directly, such as forwarding WebSocket frames
+received from another source.
+
 =head2 resume_stream
 
     $session->resume_stream($stream_id);
@@ -401,6 +436,59 @@ Submit a server push promise.
 Resume data production for a deferred stream. Call this after a streaming
 body callback has returned C<undef> and new data is available. Works for
 both request and response streams.
+
+=head2 terminate_session
+
+    $session->terminate_session($error_code);
+
+Send a GOAWAY frame and terminate the session. The C<$error_code> should
+be an nghttp2 error code (0 for C<NGHTTP2_NO_ERROR>).
+
+=head2 submit_rst_stream
+
+    $session->submit_rst_stream($stream_id, $error_code);
+
+Send a RST_STREAM frame to abnormally terminate a stream. The
+C<$error_code> should be an HTTP/2 error code (e.g. 0 for NO_ERROR,
+8 for CANCEL).
+
+=head2 submit_ping
+
+    $session->submit_ping($ack, $opaque_data);
+
+Send a PING frame. Set C<$ack> to 1 for a PING ACK response, 0 for an
+unsolicited PING. C<$opaque_data> must be exactly 8 bytes, or C<undef>
+for default.
+
+=head2 submit_window_update
+
+    $session->submit_window_update($stream_id, $window_size_increment);
+
+Send a WINDOW_UPDATE frame to increase the flow control window. Use
+C<$stream_id = 0> for connection-level flow control, or a specific
+stream ID for stream-level.
+
+=head2 get_stream_user_data
+
+    my $data = $session->get_stream_user_data($stream_id);
+
+Retrieve user data associated with a stream. Returns C<undef> if no
+data is set.
+
+=head2 set_stream_user_data
+
+    $session->set_stream_user_data($stream_id, $data);
+
+Associate arbitrary user data with a stream. Useful for storing
+per-stream application state.
+
+=head2 is_stream_deferred
+
+    my $bool = $session->is_stream_deferred($stream_id);
+
+Returns true if the stream's data provider has been deferred (i.e. the
+streaming callback returned C<undef>). The stream can be resumed with
+C<resume_stream()>.
 
 =head2 want_read
 

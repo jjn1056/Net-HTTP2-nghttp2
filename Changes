@@ -1,5 +1,14 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.004   (unreleased)
+        - submit_response() body parameter now accepts CODE ref (previously
+          only data_callback parameter was supported for streaming)
+        - Fix submit_data() to work correctly by reusing existing data provider
+          instead of creating a new one (avoids nghttp2 assertion failure)
+        - Add submit_data test suite (t/21-submit-data.t)
+        - Document all public methods and callbacks in Session.pm POD
+        - Fix author placeholder in POD
+
 0.003   2026-02-08
         - Support streaming body callback in submit_request() for client-side
           bidirectional streams (e.g. Extended CONNECT / WebSocket over HTTP/2)
