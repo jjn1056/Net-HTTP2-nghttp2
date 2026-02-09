@@ -1,5 +1,14 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.005   2026-02-09
+        - Add header_table_size (SETTINGS_HEADER_TABLE_SIZE) and
+          max_header_list_size (SETTINGS_MAX_HEADER_LIST_SIZE) to
+          submit_settings(), allowing servers to advertise HPACK limits
+        - Add max_send_header_block_length session option to new_server(),
+          using nghttp2_option / nghttp2_session_server_new2 to limit
+          outgoing header block size
+        - Add HPACK settings tests to t/14-hpack-headers.t
+
 0.004   2026-02-08
         - submit_response() body parameter now accepts CODE ref (previously
           only data_callback parameter was supported for streaming)
