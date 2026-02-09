@@ -799,6 +799,75 @@ SKIP: {
         done_testing;
     };
 
+    #==========================================================================
+    # Test: NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE constant is available
+    #==========================================================================
+    subtest 'NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE constant' => sub {
+        my $val = Net::HTTP2::nghttp2::NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE();
+        is($val, -521, 'NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE is -521');
+        done_testing;
+    };
+
+    #==========================================================================
+    # Test: Returning TEMPORAL_CALLBACK_FAILURE from on_header resets stream
+    #==========================================================================
+    subtest 'on_header returning TEMPORAL_CALLBACK_FAILURE resets stream' => sub {
+        my $header_count = 0;
+        my @closed_streams;
+
+        my $session = Net::HTTP2::nghttp2::Session->new_server(
+            callbacks => {
+                on_begin_headers => sub { return 0; },
+                on_header        => sub {
+                    my ($stream_id, $name, $value, $flags) = @_;
+                    $header_count++;
+                    # Reject after seeing a few headers
+                    if ($header_count > 3) {
+                        return Net::HTTP2::nghttp2::NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE();
+                    }
+                    return 0;
+                },
+                on_frame_recv    => sub { return 0; },
+                on_stream_close  => sub {
+                    my ($stream_id, $error_code) = @_;
+                    push @closed_streams, { stream_id => $stream_id, error => $error_code };
+                    return 0;
+                },
+            },
+        );
+
+        $session->send_connection_preface();
+        $session->mem_send();
+
+        my $header_block = encode_headers([
+            [':method', 'GET'],
+            [':path', '/'],
+            [':scheme', 'https'],
+            [':authority', 'localhost'],
+            ['x-extra', 'should-trigger-rejection'],
+        ]);
+
+        my $client_data = CLIENT_PREFACE
+            . build_settings_frame()
+            . build_headers_frame(
+                stream_id    => 1,
+                header_block => $header_block,
+                end_stream   => 1,
+                end_headers  => 1,
+            );
+
+        $session->mem_recv($client_data);
+
+        my $response = $session->mem_send();
+        my ($frames, $remaining) = parse_frames($response);
+
+        # Should get RST_STREAM for the rejected stream
+        my @rst = grep { $_->{type} == FRAME_RST_STREAM } @$frames;
+        ok(scalar @rst >= 1, 'RST_STREAM sent for rejected headers');
+
+        done_testing;
+    };
+
 }
 
 done_testing;
