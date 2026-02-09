@@ -633,16 +633,23 @@ MODULE = Net::HTTP2::nghttp2    PACKAGE = Net::HTTP2::nghttp2::Session
 
 # Create new server session
 SV *
-_new_server_xs(class, callbacks_hv, user_data)
+_new_server_xs(class, callbacks_hv, user_data, ...)
         char *class
         HV *callbacks_hv
         SV *user_data
     PREINIT:
         nghttp2_perl_session *ps;
         nghttp2_session_callbacks *callbacks;
+        nghttp2_option *option = NULL;
         int rv;
         SV **svp;
+        HV *options_hv = NULL;
     CODE:
+        /* Check for optional options hash (4th argument) */
+        if (items > 3 && SvROK(ST(3)) && SvTYPE(SvRV(ST(3))) == SVt_PVHV) {
+            options_hv = (HV *)SvRV(ST(3));
+        }
+
         /* Allocate our wrapper structure */
         Newxz(ps, 1, nghttp2_perl_session);
 
@@ -682,8 +689,31 @@ _new_server_xs(class, callbacks_hv, user_data)
         nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, perl_on_data_chunk_recv_callback);
         nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, perl_on_stream_close_callback);
 
-        /* Create session */
-        rv = nghttp2_session_server_new(&ps->session, callbacks, ps);
+        /* Create session — use new2 with options if provided */
+        if (options_hv) {
+            rv = nghttp2_option_new(&option);
+            if (rv != 0) {
+                nghttp2_session_callbacks_del(callbacks);
+                if (ps->user_data) SvREFCNT_dec(ps->user_data);
+                if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
+                if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
+                if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
+                if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
+                if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+                free(ps->send_buf);
+                Safefree(ps);
+                croak("nghttp2_option_new failed: %s", nghttp2_strerror(rv));
+            }
+
+            if ((svp = hv_fetch(options_hv, "max_send_header_block_length", 28, 0))) {
+                nghttp2_option_set_max_send_header_block_length(option, SvUV(*svp));
+            }
+
+            rv = nghttp2_session_server_new2(&ps->session, callbacks, ps, option);
+            nghttp2_option_del(option);
+        } else {
+            rv = nghttp2_session_server_new(&ps->session, callbacks, ps);
+        }
         nghttp2_session_callbacks_del(callbacks);
 
         if (rv != 0) {
@@ -849,6 +879,16 @@ submit_settings(self, settings_hv)
         if ((svp = hv_fetch(settings_hv, "enable_connect_protocol", 23, 0))) {
             iv[niv].settings_id = NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL;
             iv[niv].value = SvTRUE(*svp) ? 1 : 0;
+            niv++;
+        }
+        if ((svp = hv_fetch(settings_hv, "header_table_size", 17, 0))) {
+            iv[niv].settings_id = NGHTTP2_SETTINGS_HEADER_TABLE_SIZE;
+            iv[niv].value = SvUV(*svp);
+            niv++;
+        }
+        if ((svp = hv_fetch(settings_hv, "max_header_list_size", 20, 0))) {
+            iv[niv].settings_id = NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE;
+            iv[niv].value = SvUV(*svp);
             niv++;
         }
 

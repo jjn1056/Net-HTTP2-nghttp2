@@ -14,13 +14,23 @@ sub new_server {
     my $user_data = delete $args{user_data};
     my $settings  = delete $args{settings} // {};
 
+    # Session options (passed to nghttp2_option / nghttp2_session_server_new2)
+    my $max_send_header_block_length = delete $args{max_send_header_block_length};
+
     # Validate required callbacks
     for my $cb (qw(on_begin_headers on_header on_frame_recv)) {
         croak "Missing required callback: $cb" unless $callbacks->{$cb};
     }
 
+    # Build options hash for XS if any session options are set
+    my %options;
+    $options{max_send_header_block_length} = $max_send_header_block_length
+        if defined $max_send_header_block_length;
+
     # Create the session via XS
-    my $self = $class->_new_server_xs($callbacks, $user_data);
+    my $self = %options
+        ? $class->_new_server_xs($callbacks, $user_data, \%options)
+        : $class->_new_server_xs($callbacks, $user_data);
 
     # Apply initial settings
     if (%$settings) {
