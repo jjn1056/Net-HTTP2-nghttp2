@@ -1274,19 +1274,28 @@ _submit_request_xs(self, headers_av, body_sv)
         }
 
         /* Check if we have a body to send */
-        if (SvOK(body_sv) && SvPOK(body_sv)) {
+        if (SvOK(body_sv) && SvROK(body_sv) && SvTYPE(SvRV(body_sv)) == SVt_PVCV) {
+            /* CODE ref body: streaming callback data provider */
+            Newxz(dp, 1, nghttp2_perl_data_provider);
+            dp->stream_id = 0;  /* Will be set after submit */
+            dp->eof = 0;
+            dp->deferred = 0;
+            dp->callback = newSVsv(body_sv);
+
+            data_prd.source.ptr = dp;
+            data_prd.read_callback = perl_data_source_read_callback;
+            data_prd_ptr = &data_prd;
+        }
+        else if (SvOK(body_sv) && SvPOK(body_sv)) {
             const char *body_ptr = SvPVbyte(body_sv, body_len);
             if (body_len > 0) {
-                /* Create a simple one-shot data provider for the body */
+                /* Static string body: one-shot data provider */
                 Newxz(dp, 1, nghttp2_perl_data_provider);
                 dp->stream_id = 0;  /* Will be set after submit */
                 dp->eof = 0;
                 dp->deferred = 0;
-
-                /* Store body as a callback that returns the body once */
-                /* We'll use a closure-like approach: store body in user_data */
                 dp->user_data = newSVsv(body_sv);
-                dp->callback = NULL;  /* Special marker: use user_data as body */
+                dp->callback = NULL;  /* Use user_data as body */
 
                 data_prd.source.ptr = dp;
                 data_prd.read_callback = perl_data_source_read_callback;
@@ -1300,6 +1309,7 @@ _submit_request_xs(self, headers_av, body_sv)
 
         if (stream_id < 0) {
             if (dp) {
+                if (dp->callback) SvREFCNT_dec(dp->callback);
                 if (dp->user_data) SvREFCNT_dec(dp->user_data);
                 Safefree(dp);
             }

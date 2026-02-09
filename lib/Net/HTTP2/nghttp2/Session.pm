@@ -40,6 +40,10 @@ sub new_client {
 }
 
 # High-level request submission (client-side)
+# Body can be: undef (no body), string (static body), or CODE ref (streaming callback).
+# Streaming callback receives ($stream_id, $max_length) and returns:
+#   ($data, $eof_flag) - send data, eof=1 closes stream
+#   undef              - defer; call resume_stream() when data is ready
 sub submit_request {
     my ($self, %args) = @_;
 
