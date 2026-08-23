@@ -386,6 +386,10 @@ static int perl_on_frame_recv_callback(nghttp2_session *session,
     hv_store(frame_hv, "type", 4, newSViv(frame->hd.type), 0);
     hv_store(frame_hv, "flags", 5, newSViv(frame->hd.flags), 0);
     hv_store(frame_hv, "length", 6, newSViv(frame->hd.length), 0);
+    if (frame->hd.type == NGHTTP2_HEADERS) {
+        hv_store(frame_hv, "headers_category", 16,
+                 newSViv(frame->headers.cat), 0);
+    }
 
     args = newAV();
     av_push(args, newRV_noinc((SV *)frame_hv));

@@ -9,7 +9,7 @@ use warnings;
 use Test::More;
 use lib 't/lib';
 
-use Net::HTTP2::nghttp2;
+use Net::HTTP2::nghttp2 qw(NGHTTP2_HCAT_RESPONSE NGHTTP2_HCAT_HEADERS);
 use Net::HTTP2::nghttp2::Session;
 use Test::HTTP2::Frame qw(:all);
 use Test::HTTP2::HPACK qw(encode_headers);
@@ -473,26 +473,28 @@ SKIP: {
     # (test_can_receive_trailers from python-hyper/h2)
     #==========================================================================
     subtest 'client receives trailers' => sub {
-        my %headers;
-        my %trailers;
-        my $in_trailers = 0;
+        my @header_blocks;
+        my @current_headers;
 
         my $session = Net::HTTP2::nghttp2::Session->new_client(
             callbacks => {
-                on_begin_headers   => sub { return 0; },
-                on_header          => sub {
-                    my ($stream_id, $name, $value, $flags) = @_;
-                    if ($in_trailers) {
-                        $trailers{$name} = $value;
-                    } else {
-                        $headers{$name} = $value;
-                    }
+                on_begin_headers => sub {
+                    @current_headers = ();
                     return 0;
                 },
-                on_frame_recv      => sub { return 0; },
-                on_data_chunk_recv => sub {
-                    # After data, next headers are trailers
-                    $in_trailers = 1;
+                on_header => sub {
+                    my (undef, $name, $value) = @_;
+                    push @current_headers, [$name, $value];
+                    return 0;
+                },
+                on_frame_recv => sub {
+                    my ($frame) = @_;
+                    if ($frame->{type} == FRAME_HEADERS) {
+                        push @header_blocks, {
+                            category => $frame->{headers_category},
+                            headers  => [map { [@$_] } @current_headers],
+                        };
+                    }
                     return 0;
                 },
             },
@@ -541,9 +543,14 @@ SKIP: {
 
         $session->mem_recv($server_response);
 
-        is($headers{':status'}, '200', 'Response status received');
-        is($trailers{'x-checksum'}, 'abc123', 'Trailer x-checksum received');
-        is($trailers{'x-signature'}, 'xyz789', 'Trailer x-signature received');
+        is($header_blocks[0]{category}, NGHTTP2_HCAT_RESPONSE,
+           'initial block is a response');
+        is($header_blocks[-1]{category}, NGHTTP2_HCAT_HEADERS,
+           'later block is ordinary trailing HEADERS');
+        ok(
+            scalar(grep { $_->[0] eq 'x-checksum' } @{ $header_blocks[-1]{headers} }),
+            'trailer field belongs to the later header block',
+        );
 
         done_testing;
     };
