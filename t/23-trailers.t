@@ -197,6 +197,121 @@ subtest 'callback arities remain compatible and no_end_stream waits for EOF' => 
     is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'stream closes normally');
 };
 
+subtest 'callback exceptions warn, fail the send, and clean up safely' => sub {
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair();
+    my $callback_calls = 0;
+
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub {
+            $callback_calls++;
+            die "intentional data callback failure\n";
+        },
+    );
+
+    my @warnings;
+    my $sent = eval {
+        local $SIG{__WARN__} = sub { push @warnings, @_ };
+        $server->mem_send;
+        1;
+    };
+    my $send_error = $@;
+
+    ok(!$sent, 'callback exception fails the outbound send');
+    like(
+        $send_error,
+        qr/\Anghttp2_session_send failed: .*callback.*failed/i,
+        'send failure reports the native callback failure',
+    );
+    is($callback_calls, 1, 'the failing callback is invoked once');
+    is(scalar @warnings, 1, 'the callback exception produces one captured warning');
+    like(
+        $warnings[0],
+        qr/\Anghttp2 data provider callback error: intentional data callback failure\n\z/,
+        'the captured warning preserves the callback exception',
+    );
+
+    my $destroyed = eval {
+        undef $server;
+        undef $client;
+        1;
+    };
+    ok($destroyed, 'sessions clean up after the callback failure');
+};
+
+subtest 'surplus callback values are discarded after the first three' => sub {
+    my (@blocks, @current, @data_frames, @closed);
+    my $body = '';
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_begin_headers => sub {
+            @current = ();
+            return 0;
+        },
+        on_header => sub {
+            my (undef, $name, $value) = @_;
+            push @current, [$name, $value];
+            return 0;
+        },
+        on_data_chunk_recv => sub {
+            my (undef, $data) = @_;
+            $body .= $data;
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            if ($frame->{type} == FRAME_HEADERS) {
+                push @blocks, {
+                    category => $frame->{headers_category},
+                    flags    => $frame->{flags},
+                    headers  => [map { [@$_] } @current],
+                };
+            }
+            push @data_frames, {%$frame} if $frame->{type} == FRAME_DATA;
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    my $callback_calls = 0;
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub {
+            return ('unexpected follow-up', 1) if $callback_calls++;
+            return ('first-three body', 1, 1, 'surplus body', 0, 0);
+        },
+    );
+    pump_sessions($client, $server);
+    $server->submit_trailer(
+        $stream_id,
+        headers => [['x-surplus', 'discarded']],
+    );
+    pump_sessions($client, $server);
+
+    is($callback_calls, 1, 'the second return value finishes the provider');
+    is($body, 'first-three body', 'only the first return value reaches the peer');
+    ok(
+        !(grep { $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'the third return value reserves END_STREAM for trailers',
+    );
+    is($blocks[-1]{category}, NGHTTP2_HCAT_HEADERS, 'trailing HEADERS follows DATA');
+    is_deeply(
+        $blocks[-1]{headers},
+        [['x-surplus', 'discarded']],
+        'the trailer arrives after surplus values are discarded',
+    );
+    ok($blocks[-1]{flags} & FLAG_END_STREAM, 'trailing HEADERS ends the stream');
+    is_deeply(
+        \@closed,
+        [[$client_stream_id, NGHTTP2_NO_ERROR]],
+        'the stream closes normally',
+    );
+};
+
 subtest 'submit_data can finish content without ending the stream' => sub {
     my (@data_frames, @closed, $body);
     my ($client, $server, $client_stream_id, $stream_id) = new_pair(

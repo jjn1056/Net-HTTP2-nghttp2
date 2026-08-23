@@ -505,11 +505,14 @@ Queue a trailing HEADERS block that ends the stream. C<headers> defaults to an
 empty array reference; order and duplicate names are preserved. Trailer names
 must be ordinary field names, not pseudo-header names beginning with C<:>.
 
-Before calling this method, the data provider must finish with
-C<($data, 1, 1)> or C<submit_data($stream_id, $data, 1, 1)> so the final DATA
-does not consume END_STREAM. C<submit_trailer> may be called inside the data
-callback or after that callback returns. Omit C<submit_trailer> to retain the
-normal DATA END_STREAM behavior; an empty C<headers> list queues an empty
+When trailers follow, the data provider must ultimately report EOF together
+with NO_END_STREAM, using C<($data, 1, 1)> or
+C<submit_data($stream_id, $data, 1, 1)>, so the final DATA does not consume
+END_STREAM. C<submit_trailer> may be called inside the data callback or after
+that callback returns. Callers that do not send trailers should use the legacy
+two-value C<($data, $eof_flag)> callback or three-argument
+C<submit_data($stream_id, $data, $eof)> form, where a true EOF retains the
+normal DATA END_STREAM behavior. An empty C<headers> list queues an empty
 terminal HEADERS block.
 
 A zero return means nghttp2 accepted the trailer block into its outbound
