@@ -1,12 +1,13 @@
 Revision history for Net-HTTP2-nghttp2
 
 0.009   2026-08-23
-        - Add submit_trailer() for trailing HTTP/2 HEADERS.
-        - Allow streaming callbacks and submit_data() to signal content EOF
-          without END_STREAM when a trailing header block will follow.
-        - Expose received HEADERS categories through on_frame_recv.
-        - Export HTTP/2 wire error codes and header-category constants in
-          dedicated :http2_errors and :header_categories tags.
+        - Add end-to-end HTTP/2 trailer support, including submit_trailer(),
+          content EOF without END_STREAM for streamed and direct bodies, and
+          receive-side HEADERS categorization.
+        - Preserve backward compatibility for existing two-value streaming
+          callbacks and three-argument submit_data() calls.
+        - Export standard HTTP/2 wire error codes and header-category constants
+          through dedicated :http2_errors and :header_categories tags.
         - Complete the advertised constant bindings and add an export audit.
 
 0.008   2026-06-14
