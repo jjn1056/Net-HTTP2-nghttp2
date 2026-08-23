@@ -7,7 +7,9 @@ use Net::HTTP2::nghttp2 qw(
     NGHTTP2_HCAT_RESPONSE NGHTTP2_HCAT_HEADERS
 );
 use Net::HTTP2::nghttp2::Session;
-use Test::HTTP2::Frame qw(FRAME_DATA FRAME_HEADERS FLAG_END_STREAM);
+use Test::HTTP2::Frame qw(
+    FRAME_DATA FRAME_GOAWAY FRAME_HEADERS FRAME_RST_STREAM FLAG_END_STREAM
+);
 
 sub pump_sessions {
     my ($client, $server) = @_;
@@ -282,6 +284,312 @@ subtest 'no_end_stream is ignored until EOF' => sub {
         'legacy EOF still puts END_STREAM on DATA',
     );
     is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'stream closes normally');
+};
+
+subtest 'body and trailers round trip after the callback returns' => sub {
+    my (@blocks, @current, @data_frames, @terminal_frames, @closed, @events);
+    my $body = '';
+
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_begin_headers => sub {
+            @current = ();
+            return 0;
+        },
+        on_header => sub {
+            my (undef, $name, $value) = @_;
+            push @current, [$name, $value];
+            return 0;
+        },
+        on_data_chunk_recv => sub {
+            my (undef, $data) = @_;
+            $body .= $data;
+            push @events, 'data';
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            if ($frame->{type} == FRAME_HEADERS) {
+                push @blocks, {
+                    category => $frame->{headers_category},
+                    flags    => $frame->{flags},
+                    headers  => [map { [@$_] } @current],
+                };
+                push @events, 'trailers'
+                    if $frame->{headers_category} == NGHTTP2_HCAT_HEADERS;
+            }
+            push @data_frames, {%$frame} if $frame->{type} == FRAME_DATA;
+            push @terminal_frames, {%$frame}
+                if $frame->{type} == FRAME_GOAWAY
+                || $frame->{type} == FRAME_RST_STREAM;
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    $server->submit_response(
+        $stream_id,
+        status  => 200,
+        headers => [['content-type', 'text/plain']],
+        body    => sub { return ('response body', 1, 1) },
+    );
+    pump_sessions($client, $server);
+
+    $server->submit_trailer(
+        $stream_id,
+        headers => [
+            ['x-checksum', 'abc'],
+            ['set-cookie', 'a=1'],
+            ['set-cookie', 'b=2'],
+        ],
+    );
+    pump_sessions($client, $server);
+
+    is($body, 'response body', 'body arrives intact');
+    is_deeply(
+        [map { $_->{category} } @blocks],
+        [NGHTTP2_HCAT_RESPONSE, NGHTTP2_HCAT_HEADERS],
+        'initial response and trailing HEADERS have distinct categories',
+    );
+    is_deeply(
+        $blocks[-1]{headers},
+        [
+            ['x-checksum', 'abc'],
+            ['set-cookie', 'a=1'],
+            ['set-cookie', 'b=2'],
+        ],
+        'trailer order and duplicate fields survive the wire',
+    );
+    ok(
+        !grep({ $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'DATA reserves END_STREAM for trailers',
+    );
+    ok($blocks[-1]{flags} & FLAG_END_STREAM, 'trailing HEADERS ends the stream');
+    is_deeply(\@events, ['data', 'trailers'], 'body is observed before trailers');
+    is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'stream closes cleanly');
+    is(scalar @terminal_frames, 0, 'no RST_STREAM or GOAWAY was needed');
+};
+
+subtest 'trailers can be queued inside the body callback' => sub {
+    my (@blocks, @current, @events, @closed);
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_begin_headers => sub {
+            @current = ();
+            return 0;
+        },
+        on_header => sub {
+            my (undef, $name, $value) = @_;
+            push @current, [$name, $value];
+            return 0;
+        },
+        on_data_chunk_recv => sub {
+            push @events, 'data';
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            if ($frame->{type} == FRAME_HEADERS) {
+                push @blocks, {
+                    category => $frame->{headers_category},
+                    flags    => $frame->{flags},
+                    headers  => [map { [@$_] } @current],
+                };
+                push @events, 'trailers'
+                    if $frame->{headers_category} == NGHTTP2_HCAT_HEADERS;
+            }
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    my $submitted = 0;
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub {
+            if (!$submitted++) {
+                $server->submit_trailer(
+                    $stream_id,
+                    headers => [['x-inside', 'yes']],
+                );
+            }
+            return ('inside body', 1, 1);
+        },
+    );
+    pump_sessions($client, $server);
+
+    is_deeply(\@events, ['data', 'trailers'], 'reentrant submission preserves wire order');
+    is($blocks[-1]{category}, NGHTTP2_HCAT_HEADERS, 'reentrant block is later HEADERS');
+    is_deeply($blocks[-1]{headers}, [['x-inside', 'yes']], 'reentrant trailer arrives');
+    ok($blocks[-1]{flags} & FLAG_END_STREAM, 'reentrant trailer ends the stream');
+    is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'reentrant stream closes cleanly');
+};
+
+subtest 'empty body and empty trailer block still terminate' => sub {
+    my (@blocks, @current, @closed);
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_begin_headers => sub {
+            @current = ();
+            return 0;
+        },
+        on_header => sub {
+            my (undef, $name, $value) = @_;
+            push @current, [$name, $value];
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            if ($frame->{type} == FRAME_HEADERS) {
+                push @blocks, {
+                    category => $frame->{headers_category},
+                    flags    => $frame->{flags},
+                    headers  => [map { [@$_] } @current],
+                };
+            }
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub { return ('', 1, 1) },
+    );
+    pump_sessions($client, $server);
+    $server->submit_trailer($stream_id, headers => []);
+    pump_sessions($client, $server);
+
+    is($blocks[-1]{category}, NGHTTP2_HCAT_HEADERS, 'empty trailer is later HEADERS');
+    is_deeply($blocks[-1]{headers}, [], 'empty trailer block has no fields');
+    ok($blocks[-1]{flags} & FLAG_END_STREAM, 'empty trailer block ends the stream');
+    is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'empty response closes normally');
+};
+
+subtest 'submit_data can reserve END_STREAM for trailers' => sub {
+    my (@blocks, @current, @data_frames, @closed);
+    my $body = '';
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_begin_headers => sub {
+            @current = ();
+            return 0;
+        },
+        on_header => sub {
+            my (undef, $name, $value) = @_;
+            push @current, [$name, $value];
+            return 0;
+        },
+        on_data_chunk_recv => sub {
+            my (undef, $data) = @_;
+            $body .= $data;
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            if ($frame->{type} == FRAME_HEADERS) {
+                push @blocks, {
+                    category => $frame->{headers_category},
+                    flags    => $frame->{flags},
+                    headers  => [map { [@$_] } @current],
+                };
+            }
+            push @data_frames, {%$frame} if $frame->{type} == FRAME_DATA;
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub { return undef },
+    );
+    pump_sessions($client, $server);
+    $server->submit_data($stream_id, 'direct body', 1, 1);
+    pump_sessions($client, $server);
+    $server->submit_trailer(
+        $stream_id,
+        headers => [['x-direct', 'yes']],
+    );
+    pump_sessions($client, $server);
+
+    is($body, 'direct body', 'direct data arrives before trailers');
+    ok(
+        !grep({ $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'direct final DATA does not end the stream',
+    );
+    is($blocks[-1]{category}, NGHTTP2_HCAT_HEADERS, 'direct trailer is later HEADERS');
+    is_deeply($blocks[-1]{headers}, [['x-direct', 'yes']], 'direct trailer arrives');
+    ok($blocks[-1]{flags} & FLAG_END_STREAM, 'direct trailing HEADERS ends the stream');
+    is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'direct stream closes cleanly');
+};
+
+subtest 'submit_trailer validates the Perl header shape' => sub {
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair();
+    my @cases = (
+        [
+            'non-array header list',
+            sub { $server->submit_trailer($stream_id, headers => {}) },
+            qr/submit_trailer: headers must be an array reference/,
+        ],
+        [
+            'non-array pair',
+            sub { $server->submit_trailer($stream_id, headers => ['x']) },
+            qr/submit_trailer: header 0 must be a two-element array reference/,
+        ],
+        [
+            'one-element pair',
+            sub { $server->submit_trailer($stream_id, headers => [['x']]) },
+            qr/submit_trailer: header 0 must be a two-element array reference/,
+        ],
+        [
+            'undefined name',
+            sub { $server->submit_trailer($stream_id, headers => [[undef, 'v']]) },
+            qr/submit_trailer: header 0 name must be a defined non-reference scalar/,
+        ],
+        [
+            'reference value',
+            sub { $server->submit_trailer($stream_id, headers => [['x', []]]) },
+            qr/submit_trailer: header 0 value must be a defined non-reference scalar/,
+        ],
+        [
+            'pseudo-header',
+            sub { $server->submit_trailer($stream_id, headers => [[':status', '200']]) },
+            qr/submit_trailer: header 0 must not use a pseudo-header name/,
+        ],
+    );
+
+    for my $case (@cases) {
+        my ($label, $call, $pattern) = @$case;
+        my $ok = eval {
+            $call->();
+            1;
+        };
+        ok(!$ok, "$label dies");
+        like($@, $pattern, "$label reports the precise input error");
+    }
+};
+
+subtest 'stream ID zero fails immediately' => sub {
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair();
+    my $ok = eval {
+        $server->submit_trailer(0);
+        1;
+    };
+
+    ok(!$ok, 'invalid stream ID dies');
+    like($@, qr/nghttp2_submit_trailer failed:/, 'native error is reported');
 };
 
 done_testing;

@@ -144,6 +144,30 @@ sub submit_response {
     }
 }
 
+sub submit_trailer {
+    my ($self, $stream_id, %args) = @_;
+
+    my $headers = delete($args{headers}) // [];
+    croak 'submit_trailer: headers must be an array reference'
+        unless ref($headers) eq 'ARRAY';
+
+    for my $index (0 .. $#$headers) {
+        my $pair = $headers->[$index];
+        croak "submit_trailer: header $index must be a two-element array reference"
+            unless ref($pair) eq 'ARRAY' && @$pair == 2;
+
+        my ($name, $value) = @$pair;
+        croak "submit_trailer: header $index name must be a defined non-reference scalar"
+            unless defined($name) && !ref($name);
+        croak "submit_trailer: header $index value must be a defined non-reference scalar"
+            unless defined($value) && !ref($value);
+        croak "submit_trailer: header $index must not use a pseudo-header name"
+            if $name =~ /^:/;
+    }
+
+    return $self->_submit_trailer_xs($stream_id, $headers);
+}
+
 # Resume a deferred stream (call after data becomes available)
 sub resume_stream {
     my ($self, $stream_id) = @_;
