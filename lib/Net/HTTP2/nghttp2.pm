@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use XSLoader;
 
-our $VERSION = '0.008';
+our $VERSION = '0.009';
 
 XSLoader::load('Net::HTTP2::nghttp2', $VERSION);
 
@@ -116,7 +116,11 @@ Returns true if nghttp2 is available and properly linked.
 
 =head1 CONSTANTS
 
-=head2 Error Codes
+=head2 Library Error Returns
+
+The C<:errors> export tag contains negative C<NGHTTP2_ERR_*> values returned
+by nghttp2 library API calls and callbacks. They are distinct from the
+HTTP/2 wire error codes in C<:http2_errors>.
 
 =over 4
 
@@ -128,9 +132,51 @@ Operation would block (non-fatal).
 
 Callback returned an error.
 
+=item NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE
+
+Callback failure that closes the affected stream without terminating the
+session.
+
 =item NGHTTP2_ERR_DEFERRED
 
 Data production deferred (for flow control).
+
+=back
+
+=head2 HTTP/2 Wire Errors
+
+The C<:http2_errors> export tag contains HTTP/2 wire error codes from
+RFC 9113. These are protocol values for frames such as RST_STREAM and GOAWAY,
+not negative nghttp2 library return values. The tag includes
+C<NGHTTP2_NO_ERROR>, C<NGHTTP2_PROTOCOL_ERROR>, C<NGHTTP2_INTERNAL_ERROR>,
+C<NGHTTP2_FLOW_CONTROL_ERROR>, C<NGHTTP2_SETTINGS_TIMEOUT>,
+C<NGHTTP2_STREAM_CLOSED>, C<NGHTTP2_FRAME_SIZE_ERROR>,
+C<NGHTTP2_REFUSED_STREAM>, C<NGHTTP2_CANCEL>, C<NGHTTP2_COMPRESSION_ERROR>,
+C<NGHTTP2_CONNECT_ERROR>, C<NGHTTP2_ENHANCE_YOUR_CALM>,
+C<NGHTTP2_INADEQUATE_SECURITY>, and C<NGHTTP2_HTTP_1_1_REQUIRED>.
+
+=head2 Header Categories
+
+The C<:header_categories> export tag contains nghttp2's classifications for
+received HEADERS blocks.
+
+=over 4
+
+=item NGHTTP2_HCAT_REQUEST
+
+Initial request headers.
+
+=item NGHTTP2_HCAT_RESPONSE
+
+Initial response headers.
+
+=item NGHTTP2_HCAT_PUSH_RESPONSE
+
+Pushed response headers.
+
+=item NGHTTP2_HCAT_HEADERS
+
+A later ordinary HEADERS block.
 
 =back
 
@@ -145,6 +191,14 @@ End of stream flag.
 =item NGHTTP2_FLAG_END_HEADERS
 
 End of headers flag.
+
+=item NGHTTP2_FLAG_PADDED
+
+Frame contains padding.
+
+=item NGHTTP2_FLAG_PRIORITY
+
+HEADERS frame contains priority information.
 
 =back
 
@@ -313,6 +367,30 @@ with a C<:protocol> pseudo-header.
             return ($chunk, $eof);
         },
     );
+
+    my @chunks = ('first chunk', 'final chunk');
+
+    $session->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub {
+            my $chunk = shift @chunks;
+            my $last = @chunks ? 0 : 1;
+
+            if ($last) {
+                $session->submit_trailer(
+                    $stream_id,
+                    headers => [['x-checksum', 'abc']],
+                );
+            }
+
+            return ($chunk, $last, $last);
+        },
+    );
+
+The third true return value reserves END_STREAM for the trailing HEADERS
+block. A two-value C<($chunk, 1)> return still ends the stream on DATA exactly
+as before.
 
     # Return undef to defer, then call resume_stream() when data ready:
     body => sub {

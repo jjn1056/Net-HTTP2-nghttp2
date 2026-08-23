@@ -64,8 +64,9 @@ sub new_client {
 # High-level request submission (client-side)
 # Body can be: undef (no body), string (static body), or CODE ref (streaming callback).
 # Streaming callback receives ($stream_id, $max_length) and returns:
-#   ($data, $eof_flag) - send data, eof=1 closes stream
-#   undef              - defer; call resume_stream() when data is ready
+#   ($data, $eof_flag)                 - send data; EOF ends the stream
+#   ($data, $eof_flag, $no_end_stream) - EOF without DATA END_STREAM for trailers
+#   undef or an empty list              - defer; resume or submit data later
 sub submit_request {
     my ($self, %args) = @_;
 
@@ -398,11 +399,17 @@ C<($stream_id, $max_length)> and must return one of:
 
 =item C<($data, $eof_flag)>
 
-Send C<$data> as a DATA frame. If C<$eof_flag> is true, END_STREAM is set.
+Send data. A true EOF ends the stream, preserving pre-0.009 behavior.
 
-=item C<undef>
+=item C<($data, $eof_flag, $no_end_stream)>
 
-Defer data production. Call C<resume_stream($stream_id)> when data is ready.
+Send data. When both flags are true, content production is complete but DATA
+does not carry END_STREAM, allowing C<submit_trailer()> to queue the terminal
+HEADERS block. The third value has no effect unless EOF is true.
+
+=item C<undef> or an empty list
+
+Defer production until the stream is resumed or C<submit_data()> is called.
 
 =back
 
@@ -434,8 +441,43 @@ Arrayref of C<[$name, $value]> pairs.
 =item body
 
 Response body. Same types as C<submit_request>: C<undef> (no body),
-string (static body), or CODE ref (streaming callback with identical
-signature).
+string (static body), or CODE ref (streaming callback).
+
+=over 4
+
+=item C<undef> (or omitted)
+
+No body. HEADERS frame sent with END_STREAM.
+
+=item String
+
+Static body. Sent as DATA frame(s) with END_STREAM after the last frame.
+
+=item CODE ref
+
+Streaming callback. It receives C<($stream_id, $max_length)>, or
+C<($stream_id, $max_length, $user_data)> when C<callback_data> is defined,
+and must return one of:
+
+=over 4
+
+=item C<($data, $eof_flag)>
+
+Send data. A true EOF ends the stream, preserving pre-0.009 behavior.
+
+=item C<($data, $eof_flag, $no_end_stream)>
+
+Send data. When both flags are true, content production is complete but DATA
+does not carry END_STREAM, allowing C<submit_trailer()> to queue the terminal
+HEADERS block. The third value has no effect unless EOF is true.
+
+=item C<undef> or an empty list
+
+Defer production until the stream is resumed or C<submit_data()> is called.
+
+=back
+
+=back
 
 =item data_callback
 
@@ -448,6 +490,32 @@ Optional user data passed as third argument to the streaming callback.
 
 =back
 
+=head2 submit_trailer
+
+    $session->submit_trailer(
+        $stream_id,
+        headers => [
+            ['x-checksum', 'abc'],
+            ['set-cookie', 'a=1'],
+            ['set-cookie', 'b=2'],
+        ],
+    );
+
+Queue a trailing HEADERS block that ends the stream. C<headers> defaults to an
+empty array reference; order and duplicate names are preserved. Trailer names
+must be ordinary field names, not pseudo-header names beginning with C<:>.
+
+Before calling this method, the data provider must finish with
+C<($data, 1, 1)> or C<submit_data($stream_id, $data, 1, 1)> so the final DATA
+does not consume END_STREAM. C<submit_trailer> may be called inside the data
+callback or after that callback returns. Omit C<submit_trailer> to retain the
+normal DATA END_STREAM behavior; an empty C<headers> list queues an empty
+terminal HEADERS block.
+
+A zero return means nghttp2 accepted the trailer block into its outbound
+queue. It does not mean the peer has received it. Invalid Perl input and
+immediate nghttp2 submission errors throw exceptions.
+
 =head2 submit_push_promise
 
     my $promised_stream_id = $session->submit_push_promise($stream_id, %args);
@@ -456,7 +524,7 @@ Submit a server push promise.
 
 =head2 submit_data
 
-    $session->submit_data($stream_id, $data, $eof);
+    $session->submit_data($stream_id, $data, $eof, $no_end_stream);
 
 Push data directly onto an existing stream. The stream must already have
 a data provider (established by C<submit_request> or C<submit_response>
@@ -479,6 +547,14 @@ The data to send. Can be C<undef> for an empty DATA frame.
 
 If true, the DATA frame will include END_STREAM, closing the stream.
 
+=item C<$no_end_stream>
+
+Optional and false by default. When true together with a true C<$eof>, content
+production is complete but DATA does not include END_STREAM, allowing
+C<submit_trailer()> to queue the terminal HEADERS block. It has no effect
+unless C<$eof> is true. The three-argument form retains its existing behavior:
+a true C<$eof> ends the stream on DATA.
+
 =back
 
 This is useful when you have data available outside the streaming callback
@@ -498,7 +574,7 @@ both request and response streams.
     $session->terminate_session($error_code);
 
 Send a GOAWAY frame and terminate the session. The C<$error_code> should
-be an nghttp2 error code (0 for C<NGHTTP2_NO_ERROR>).
+be an HTTP/2 wire error code (0 for C<NGHTTP2_NO_ERROR>).
 
 =head2 submit_rst_stream
 
@@ -587,7 +663,32 @@ C<:authority>, C<:status>, C<:protocol>) are delivered before regular headers.
     sub { my ($frame_hashref) = @_; return 0; }
 
 Called when a complete frame is received. The hashref contains: C<type>,
-C<flags>, C<stream_id>, C<length>.
+C<flags>, C<stream_id>, C<length>. A HEADERS frame additionally contains
+C<headers_category>, one of:
+
+=over 4
+
+=item C<NGHTTP2_HCAT_REQUEST>
+
+Initial request headers.
+
+=item C<NGHTTP2_HCAT_RESPONSE>
+
+Initial response headers.
+
+=item C<NGHTTP2_HCAT_PUSH_RESPONSE>
+
+Pushed response headers.
+
+=item C<NGHTTP2_HCAT_HEADERS>
+
+A later ordinary HEADERS block on an open stream.
+
+=back
+
+C<NGHTTP2_HCAT_HEADERS> is not a universal C<is_trailer> boolean:
+informational responses and message direction/state remain relevant when
+interpreting a later headers block.
 
 =head2 on_data_chunk_recv
 

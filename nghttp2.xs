@@ -222,8 +222,8 @@ static ssize_t perl_data_source_read_callback(
     SAVETMPS;
     PUSHMARK(SP);
 
-    /* Call: $callback->($stream_id, $max_length) */
-    /* Returns: ($data, $eof) or undef for deferred */
+    /* Call: $callback->($stream_id, $max_length[, $user_data]) */
+    /* Returns: ($data, $eof[, $no_end_stream]) or undef/empty list to defer */
     XPUSHs(sv_2mortal(newSViv(stream_id)));
     XPUSHs(sv_2mortal(newSVuv(length)));
     if (dp->user_data && SvOK(dp->user_data)) {
@@ -1268,8 +1268,11 @@ terminate_session(self, error_code)
         RETVAL
 
 # Submit response with streaming data callback
-# Callback receives ($stream_id, $max_length, $user_data) and returns ($data, $eof)
-# Return undef or empty list to defer (call resume_data later)
+# Callback receives ($stream_id, $max_length[, $user_data]); user data is optional.
+# It returns:
+#   ($data, $eof_flag)                 - send data; EOF ends the stream
+#   ($data, $eof_flag, $no_end_stream) - EOF without DATA END_STREAM for trailers
+#   undef or an empty list              - defer; resume or submit data later
 int
 _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_data)
         SV *self

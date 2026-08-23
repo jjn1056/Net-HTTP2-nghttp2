@@ -188,6 +188,32 @@ $session->submit_response($stream_id,
 );
 ```
 
+```perl
+my @chunks = ('first chunk', 'final chunk');
+
+$session->submit_response(
+    $stream_id,
+    status => 200,
+    body   => sub {
+        my $chunk = shift @chunks;
+        my $last = @chunks ? 0 : 1;
+
+        if ($last) {
+            $session->submit_trailer(
+                $stream_id,
+                headers => [['x-checksum', 'abc']],
+            );
+        }
+
+        return ($chunk, $last, $last);
+    },
+);
+```
+
+The third true return value reserves END_STREAM for the trailing HEADERS block.
+A two-value `($chunk, 1)` return still ends the stream on DATA exactly as
+before.
+
 ### RFC 8441 - WebSocket over HTTP/2
 
 ```perl

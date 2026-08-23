@@ -1,5 +1,14 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.009   2026-08-23
+        - Add submit_trailer() for trailing HTTP/2 HEADERS.
+        - Allow streaming callbacks and submit_data() to signal content EOF
+          without END_STREAM when a trailing header block will follow.
+        - Expose received HEADERS categories through on_frame_recv.
+        - Export HTTP/2 wire error codes and header-category constants in
+          dedicated :http2_errors and :header_categories tags.
+        - Complete the advertised constant bindings and add an export audit.
+
 0.008   2026-06-14
         - Expose nghttp2_option_set_stream_reset_rate_limit via new_server's
           stream_reset_burst / stream_reset_rate options (HTTP/2 Rapid Reset,

@@ -24,5 +24,6 @@ t/19-extended-connect.t
 t/20-streaming-request.t
 t/21-submit-data.t
 t/22-rst-rate-limit.t
+t/23-trailers.t
 t/lib/Test/HTTP2/Frame.pm
 t/lib/Test/HTTP2/HPACK.pm
