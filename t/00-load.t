@@ -19,4 +19,60 @@ SKIP: {
     ok(defined Net::HTTP2::nghttp2::NGHTTP2_FLAG_END_STREAM(), "NGHTTP2_FLAG_END_STREAM defined");
 }
 
+my @http2_error_names = qw(
+    NGHTTP2_NO_ERROR
+    NGHTTP2_PROTOCOL_ERROR
+    NGHTTP2_INTERNAL_ERROR
+    NGHTTP2_FLOW_CONTROL_ERROR
+    NGHTTP2_SETTINGS_TIMEOUT
+    NGHTTP2_STREAM_CLOSED
+    NGHTTP2_FRAME_SIZE_ERROR
+    NGHTTP2_REFUSED_STREAM
+    NGHTTP2_CANCEL
+    NGHTTP2_COMPRESSION_ERROR
+    NGHTTP2_CONNECT_ERROR
+    NGHTTP2_ENHANCE_YOUR_CALM
+    NGHTTP2_INADEQUATE_SECURITY
+    NGHTTP2_HTTP_1_1_REQUIRED
+);
+
+my @header_category_names = qw(
+    NGHTTP2_HCAT_REQUEST
+    NGHTTP2_HCAT_RESPONSE
+    NGHTTP2_HCAT_PUSH_RESPONSE
+    NGHTTP2_HCAT_HEADERS
+);
+
+my @library_error_names = qw(
+    NGHTTP2_ERR_WOULDBLOCK
+    NGHTTP2_ERR_CALLBACK_FAILURE
+    NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE
+    NGHTTP2_ERR_DEFERRED
+);
+
+is_deeply(
+    [sort @{ $Net::HTTP2::nghttp2::EXPORT_TAGS{errors} }],
+    [sort @library_error_names],
+    ':errors contains the callback/library return errors',
+);
+
+is_deeply(
+    [sort @{ $Net::HTTP2::nghttp2::EXPORT_TAGS{http2_errors} }],
+    [sort @http2_error_names],
+    ':http2_errors contains every HTTP/2 wire error code',
+);
+
+is_deeply(
+    [sort @{ $Net::HTTP2::nghttp2::EXPORT_TAGS{header_categories} }],
+    [sort @header_category_names],
+    ':header_categories contains every nghttp2 header category',
+);
+
+for my $name (@Net::HTTP2::nghttp2::EXPORT_OK) {
+    ok(Net::HTTP2::nghttp2->can($name), "$name is callable");
+}
+
+is(Net::HTTP2::nghttp2::NGHTTP2_INTERNAL_ERROR(), 2, 'INTERNAL_ERROR has its RFC value');
+is(Net::HTTP2::nghttp2::NGHTTP2_CANCEL(), 8, 'CANCEL has its RFC value');
+
 done_testing;
