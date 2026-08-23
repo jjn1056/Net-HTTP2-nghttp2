@@ -195,4 +195,93 @@ subtest 'callback arities remain compatible and no_end_stream waits for EOF' => 
     is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'stream closes normally');
 };
 
+subtest 'submit_data can finish content without ending the stream' => sub {
+    my (@data_frames, @closed, $body);
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_data_chunk_recv => sub {
+            my (undef, $data) = @_;
+            $body .= $data;
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            push @data_frames, {%$frame} if $frame->{type} == FRAME_DATA;
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub { return undef },
+    );
+    pump_sessions($client, $server);
+
+    my $payload = 'x' x 32768;
+    $server->submit_data($stream_id, $payload, 1, 1);
+    pump_sessions($client, $server);
+
+    is($body, $payload, 'all direct data is delivered across partial reads');
+    ok(@data_frames > 1, 'payload spans more than one DATA frame');
+    ok(
+        !(grep { $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'fourth argument suppresses END_STREAM at actual EOF',
+    );
+    is(scalar @closed, 0, 'stream remains open');
+
+    $server->submit_rst_stream($stream_id, NGHTTP2_CANCEL);
+    pump_sessions($client, $server);
+};
+
+subtest 'no_end_stream is ignored until EOF' => sub {
+    my (@data_frames, @closed);
+    my $body = '';
+    my ($client, $server, $client_stream_id, $stream_id) = new_pair(
+        on_data_chunk_recv => sub {
+            my (undef, $data) = @_;
+            $body .= $data;
+            return 0;
+        },
+        on_frame_recv => sub {
+            my ($frame) = @_;
+            push @data_frames, {%$frame} if $frame->{type} == FRAME_DATA;
+            return 0;
+        },
+        on_stream_close => sub {
+            push @closed, [@_];
+            return 0;
+        },
+    );
+
+    $server->submit_response(
+        $stream_id,
+        status => 200,
+        body   => sub { return undef },
+    );
+    pump_sessions($client, $server);
+
+    $server->submit_data($stream_id, 'first', 0, 1);
+    pump_sessions($client, $server);
+    is($body, 'first', 'nonterminal direct data arrives');
+    ok(
+        !(grep { $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'no END_STREAM is introduced without EOF',
+    );
+    is(scalar @closed, 0, 'stream remains open after nonterminal data');
+
+    @data_frames = ();
+    $server->submit_data($stream_id, 'last', 1);
+    pump_sessions($client, $server);
+    is($body, 'firstlast', 'legacy three-argument call sends the final data');
+    ok(
+        scalar(grep { $_->{flags} & FLAG_END_STREAM } @data_frames),
+        'legacy EOF still puts END_STREAM on DATA',
+    );
+    is_deeply(\@closed, [[$client_stream_id, NGHTTP2_NO_ERROR]], 'stream closes normally');
+};
+
 done_testing;

@@ -18,6 +18,7 @@ typedef struct {
     SV *user_data;          /* User data for callback */
     int32_t stream_id;      /* Stream ID */
     int eof;                /* End of data flag */
+    int no_end_stream;      /* Suppress END_STREAM at EOF */
     int deferred;           /* Currently deferred */
 } nghttp2_perl_data_provider;
 
@@ -151,6 +152,11 @@ static ssize_t perl_data_source_read_callback(
             dp->user_data = NULL;
             if (dp->eof) {
                 *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+                if (dp->no_end_stream) {
+                    *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+                }
+            } else {
+                dp->no_end_stream = 0;
             }
         } else {
             /* Partial send - keep remainder for next call */
@@ -166,6 +172,9 @@ static ssize_t perl_data_source_read_callback(
     if (!dp->callback || !SvOK(dp->callback)) {
         if (dp->eof) {
             *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+            if (dp->no_end_stream) {
+                *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+            }
             return 0;
         }
         /* No EOF requested - defer until more data arrives via submit_data */
@@ -1316,11 +1325,12 @@ _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_d
 # state, and calls nghttp2_session_resume_data so the next mem_send will
 # invoke the read callback which returns this data.
 int
-submit_data(self, stream_id, data_sv, eof)
+submit_data(self, stream_id, data_sv, eof, no_end_stream = 0)
         SV *self
         int stream_id
         SV *data_sv
         int eof
+        int no_end_stream
     PREINIT:
         nghttp2_perl_session *ps;
         nghttp2_perl_data_provider *dp;
@@ -1346,6 +1356,7 @@ submit_data(self, stream_id, data_sv, eof)
         }
         dp->user_data = SvOK(data_sv) ? newSVsv(data_sv) : NULL;
         dp->eof = eof ? 1 : 0;
+        dp->no_end_stream = (eof && no_end_stream) ? 1 : 0;
         dp->deferred = 0;
 
         /* Resume the stream so nghttp2 calls the read callback */
