@@ -197,14 +197,11 @@ static ssize_t perl_data_source_read_callback(
         /* No return value = defer */
         dp->deferred = 1;
         ret = NGHTTP2_ERR_DEFERRED;
-    } else if (count >= 1) {
-        SV *eof_sv = NULL;
-        SV *data_sv = NULL;
-
-        if (count >= 2) {
-            eof_sv = POPs;
-        }
-        data_sv = POPs;
+    } else {
+        SV **return_values = SP - count + 1;
+        SV *data_sv = return_values[0];
+        SV *eof_sv = count >= 2 ? return_values[1] : NULL;
+        SV *no_end_stream_sv = count >= 3 ? return_values[2] : NULL;
 
         if (!SvOK(data_sv)) {
             /* undef = defer */
@@ -227,7 +224,11 @@ static ssize_t perl_data_source_read_callback(
             if (eof_sv && SvTRUE(eof_sv)) {
                 *data_flags |= NGHTTP2_DATA_FLAG_EOF;
                 dp->eof = 1;
+                if (no_end_stream_sv && SvTRUE(no_end_stream_sv)) {
+                    *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+                }
             }
+
             /* If returned empty string with no eof, also defer */
             if (data_len == 0 && !dp->eof) {
                 dp->deferred = 1;
@@ -236,6 +237,9 @@ static ssize_t perl_data_source_read_callback(
         }
     }
 
+    if (count > 0) {
+        SP -= count;
+    }
     PUTBACK;
     FREETMPS;
     LEAVE;
