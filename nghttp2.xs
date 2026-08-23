@@ -1272,7 +1272,7 @@ terminate_session(self, error_code)
 # It returns:
 #   ($data, $eof_flag)                 - send data; EOF ends the stream
 #   ($data, $eof_flag, $no_end_stream) - EOF without DATA END_STREAM for trailers
-#   undef or an empty list              - defer; resume or submit data later
+#   defer: return undef or an empty list; resume or submit data later
 int
 _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_data)
         SV *self
