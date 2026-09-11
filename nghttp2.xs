@@ -31,6 +31,10 @@ typedef struct {
     SV *cb_on_frame_recv;
     SV *cb_on_data_chunk_recv;
     SV *cb_on_stream_close;
+    SV *cb_on_frame_send;
+    SV *cb_on_frame_not_send;
+    SV *cb_on_invalid_frame_recv;
+    SV *cb_on_error;
     SV *cb_send;
     SV *cb_data_source_read;
     /* Output buffer for mem_send */
@@ -66,6 +70,83 @@ static int perl_on_stream_close_callback(nghttp2_session *session,
                                          int32_t stream_id,
                                          uint32_t error_code,
                                          void *user_data);
+static int perl_on_frame_send_callback(nghttp2_session *session,
+                                       const nghttp2_frame *frame,
+                                       void *user_data);
+static int perl_on_frame_not_send_callback(nghttp2_session *session,
+                                           const nghttp2_frame *frame,
+                                           int lib_error_code,
+                                           void *user_data);
+static int perl_on_invalid_frame_recv_callback(nghttp2_session *session,
+                                               const nghttp2_frame *frame,
+                                               int lib_error_code,
+                                               void *user_data);
+static int perl_error_callback(nghttp2_session *session, int lib_error_code,
+                               const char *msg, size_t len, void *user_data);
+
+/* Session callback plumbing shared by the server and client constructors */
+static void extract_perl_callbacks(pTHX_ nghttp2_perl_session *ps,
+                                   HV *callbacks_hv) {
+    SV **svp;
+
+    if (!callbacks_hv) {
+        return;
+    }
+
+    if ((svp = hv_fetch(callbacks_hv, "on_begin_headers", 16, 0))) {
+        ps->cb_on_begin_headers = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_header", 9, 0))) {
+        ps->cb_on_header = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_frame_recv", 13, 0))) {
+        ps->cb_on_frame_recv = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_data_chunk_recv", 18, 0))) {
+        ps->cb_on_data_chunk_recv = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_stream_close", 15, 0))) {
+        ps->cb_on_stream_close = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_frame_send", 13, 0))) {
+        ps->cb_on_frame_send = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_frame_not_send", 17, 0))) {
+        ps->cb_on_frame_not_send = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_invalid_frame_recv", 21, 0))) {
+        ps->cb_on_invalid_frame_recv = newSVsv(*svp);
+    }
+    if ((svp = hv_fetch(callbacks_hv, "on_error", 8, 0))) {
+        ps->cb_on_error = newSVsv(*svp);
+    }
+}
+
+static void release_perl_callbacks(pTHX_ nghttp2_perl_session *ps) {
+    if (ps->user_data) SvREFCNT_dec(ps->user_data);
+    if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
+    if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
+    if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
+    if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
+    if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+    if (ps->cb_on_frame_send) SvREFCNT_dec(ps->cb_on_frame_send);
+    if (ps->cb_on_frame_not_send) SvREFCNT_dec(ps->cb_on_frame_not_send);
+    if (ps->cb_on_invalid_frame_recv) SvREFCNT_dec(ps->cb_on_invalid_frame_recv);
+    if (ps->cb_on_error) SvREFCNT_dec(ps->cb_on_error);
+}
+
+static void register_nghttp2_callbacks(nghttp2_session_callbacks *callbacks) {
+    nghttp2_session_callbacks_set_send_callback(callbacks, perl_send_callback);
+    nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks, perl_on_begin_headers_callback);
+    nghttp2_session_callbacks_set_on_header_callback(callbacks, perl_on_header_callback);
+    nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, perl_on_frame_recv_callback);
+    nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, perl_on_data_chunk_recv_callback);
+    nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, perl_on_stream_close_callback);
+    nghttp2_session_callbacks_set_on_frame_send_callback(callbacks, perl_on_frame_send_callback);
+    nghttp2_session_callbacks_set_on_frame_not_send_callback(callbacks, perl_on_frame_not_send_callback);
+    nghttp2_session_callbacks_set_on_invalid_frame_recv_callback(callbacks, perl_on_invalid_frame_recv_callback);
+    nghttp2_session_callbacks_set_error_callback2(callbacks, perl_error_callback);
+}
 
 /* Data provider helper functions */
 static nghttp2_perl_data_provider *find_data_provider(nghttp2_perl_session *ps, int32_t stream_id) {
@@ -415,22 +496,10 @@ static int perl_on_header_callback(nghttp2_session *session,
     return ret;
 }
 
-/* Frame receive callback */
-static int perl_on_frame_recv_callback(nghttp2_session *session,
-                                       const nghttp2_frame *frame,
-                                       void *user_data) {
-    dTHX;
-    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
-    AV *args;
-    HV *frame_hv;
-    int ret;
+/* Build the frame info hash the frame callbacks deliver to Perl */
+static HV *perl_frame_to_hv(pTHX_ const nghttp2_frame *frame) {
+    HV *frame_hv = newHV();
 
-    if (!ps->cb_on_frame_recv || !SvOK(ps->cb_on_frame_recv)) {
-        return 0;
-    }
-
-    /* Build frame info hash */
-    frame_hv = newHV();
     hv_store(frame_hv, "stream_id", 9, newSViv(frame->hd.stream_id), 0);
     hv_store(frame_hv, "type", 4, newSViv(frame->hd.type), 0);
     hv_store(frame_hv, "flags", 5, newSViv(frame->hd.flags), 0);
@@ -440,10 +509,118 @@ static int perl_on_frame_recv_callback(nghttp2_session *session,
                  newSViv(frame->headers.cat), 0);
     }
 
+    return frame_hv;
+}
+
+/* Frame receive callback */
+static int perl_on_frame_recv_callback(nghttp2_session *session,
+                                       const nghttp2_frame *frame,
+                                       void *user_data) {
+    dTHX;
+    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
+    AV *args;
+    int ret;
+
+    if (!ps->cb_on_frame_recv || !SvOK(ps->cb_on_frame_recv)) {
+        return 0;
+    }
+
     args = newAV();
-    av_push(args, newRV_noinc((SV *)frame_hv));
+    av_push(args, newRV_noinc((SV *)perl_frame_to_hv(aTHX_ frame)));
 
     ret = call_perl_callback(aTHX_ ps->cb_on_frame_recv, args);
+
+    SvREFCNT_dec((SV *)args);
+    return ret;
+}
+
+/* Frame send callback - the frame has been serialized into the send buffer */
+static int perl_on_frame_send_callback(nghttp2_session *session,
+                                       const nghttp2_frame *frame,
+                                       void *user_data) {
+    dTHX;
+    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
+    AV *args;
+    int ret;
+
+    if (!ps->cb_on_frame_send || !SvOK(ps->cb_on_frame_send)) {
+        return 0;
+    }
+
+    args = newAV();
+    av_push(args, newRV_noinc((SV *)perl_frame_to_hv(aTHX_ frame)));
+
+    ret = call_perl_callback(aTHX_ ps->cb_on_frame_send, args);
+
+    SvREFCNT_dec((SV *)args);
+    return ret;
+}
+
+/* Frame not-send callback - the queued frame was discarded before the wire */
+static int perl_on_frame_not_send_callback(nghttp2_session *session,
+                                           const nghttp2_frame *frame,
+                                           int lib_error_code,
+                                           void *user_data) {
+    dTHX;
+    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
+    AV *args;
+    int ret;
+
+    if (!ps->cb_on_frame_not_send || !SvOK(ps->cb_on_frame_not_send)) {
+        return 0;
+    }
+
+    args = newAV();
+    av_push(args, newRV_noinc((SV *)perl_frame_to_hv(aTHX_ frame)));
+    av_push(args, newSViv(lib_error_code));
+
+    ret = call_perl_callback(aTHX_ ps->cb_on_frame_not_send, args);
+
+    SvREFCNT_dec((SV *)args);
+    return ret;
+}
+
+/* Invalid frame receive callback - nghttp2 rejected a peer frame */
+static int perl_on_invalid_frame_recv_callback(nghttp2_session *session,
+                                               const nghttp2_frame *frame,
+                                               int lib_error_code,
+                                               void *user_data) {
+    dTHX;
+    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
+    AV *args;
+    int ret;
+
+    if (!ps->cb_on_invalid_frame_recv || !SvOK(ps->cb_on_invalid_frame_recv)) {
+        return 0;
+    }
+
+    args = newAV();
+    av_push(args, newRV_noinc((SV *)perl_frame_to_hv(aTHX_ frame)));
+    av_push(args, newSViv(lib_error_code));
+
+    ret = call_perl_callback(aTHX_ ps->cb_on_invalid_frame_recv, args);
+
+    SvREFCNT_dec((SV *)args);
+    return ret;
+}
+
+/* Error callback - nghttp2's human-readable diagnostics */
+static int perl_error_callback(nghttp2_session *session, int lib_error_code,
+                               const char *msg, size_t len, void *user_data) {
+    dTHX;
+    nghttp2_perl_session *ps = (nghttp2_perl_session *)user_data;
+    AV *args;
+    int ret;
+
+    if (!ps->cb_on_error || !SvOK(ps->cb_on_error)) {
+        return 0;
+    }
+
+    args = newAV();
+    av_push(args, newSViv(lib_error_code));
+    av_push(args, newSVpvn(msg ? msg : "", msg ? len : 0));
+
+    ret = call_perl_callback(aTHX_ ps->cb_on_error, args);
 
     SvREFCNT_dec((SV *)args);
     return ret;
@@ -551,6 +728,27 @@ int
 NGHTTP2_ERR_DEFERRED()
     CODE:
         RETVAL = NGHTTP2_ERR_DEFERRED;
+    OUTPUT:
+        RETVAL
+
+int
+NGHTTP2_ERR_STREAM_CLOSING()
+    CODE:
+        RETVAL = NGHTTP2_ERR_STREAM_CLOSING;
+    OUTPUT:
+        RETVAL
+
+int
+NGHTTP2_ERR_PROTO()
+    CODE:
+        RETVAL = NGHTTP2_ERR_PROTO;
+    OUTPUT:
+        RETVAL
+
+int
+NGHTTP2_ERR_HTTP_HEADER()
+    CODE:
+        RETVAL = NGHTTP2_ERR_HTTP_HEADER;
     OUTPUT:
         RETVAL
 
@@ -864,42 +1062,18 @@ _new_server_xs(class, callbacks_hv, user_data, ...)
         }
 
         /* Extract callbacks from hash */
-        if ((svp = hv_fetch(callbacks_hv, "on_begin_headers", 16, 0))) {
-            ps->cb_on_begin_headers = newSVsv(*svp);
-        }
-        if ((svp = hv_fetch(callbacks_hv, "on_header", 9, 0))) {
-            ps->cb_on_header = newSVsv(*svp);
-        }
-        if ((svp = hv_fetch(callbacks_hv, "on_frame_recv", 13, 0))) {
-            ps->cb_on_frame_recv = newSVsv(*svp);
-        }
-        if ((svp = hv_fetch(callbacks_hv, "on_data_chunk_recv", 18, 0))) {
-            ps->cb_on_data_chunk_recv = newSVsv(*svp);
-        }
-        if ((svp = hv_fetch(callbacks_hv, "on_stream_close", 15, 0))) {
-            ps->cb_on_stream_close = newSVsv(*svp);
-        }
+        extract_perl_callbacks(aTHX_ ps, callbacks_hv);
 
         /* Create nghttp2 callbacks */
         nghttp2_session_callbacks_new(&callbacks);
-        nghttp2_session_callbacks_set_send_callback(callbacks, perl_send_callback);
-        nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks, perl_on_begin_headers_callback);
-        nghttp2_session_callbacks_set_on_header_callback(callbacks, perl_on_header_callback);
-        nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, perl_on_frame_recv_callback);
-        nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, perl_on_data_chunk_recv_callback);
-        nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, perl_on_stream_close_callback);
+        register_nghttp2_callbacks(callbacks);
 
         /* Create session — use new2 with options if provided */
         if (options_hv) {
             rv = nghttp2_option_new(&option);
             if (rv != 0) {
                 nghttp2_session_callbacks_del(callbacks);
-                if (ps->user_data) SvREFCNT_dec(ps->user_data);
-                if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
-                if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
-                if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
-                if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
-                if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+                release_perl_callbacks(aTHX_ ps);
                 free(ps->send_buf);
                 Safefree(ps);
                 croak("nghttp2_option_new failed: %s", nghttp2_strerror(rv));
@@ -925,12 +1099,7 @@ _new_server_xs(class, callbacks_hv, user_data, ...)
         nghttp2_session_callbacks_del(callbacks);
 
         if (rv != 0) {
-            if (ps->user_data) SvREFCNT_dec(ps->user_data);
-            if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
-            if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
-            if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
-            if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
-            if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+            release_perl_callbacks(aTHX_ ps);
             free(ps->send_buf);
             Safefree(ps);
             croak("nghttp2_session_server_new failed: %s", nghttp2_strerror(rv));
@@ -956,12 +1125,7 @@ DESTROY(self)
             if (ps->session) {
                 nghttp2_session_del(ps->session);
             }
-            if (ps->user_data) SvREFCNT_dec(ps->user_data);
-            if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
-            if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
-            if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
-            if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
-            if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+            release_perl_callbacks(aTHX_ ps);
             if (ps->send_buf) free(ps->send_buf);
             /* Clean up data providers */
             for (i = 0; i < ps->data_providers_count; i++) {
@@ -1252,6 +1416,38 @@ set_stream_user_data(self, stream_id, data)
     OUTPUT:
         RETVAL
 
+# Query whether the remote peer half closed a stream.
+# Returns 1 or 0, or undef when no such stream exists.
+SV *
+get_stream_remote_close(self, stream_id)
+        SV *self
+        int stream_id
+    PREINIT:
+        nghttp2_perl_session *ps;
+        int rv;
+    CODE:
+        ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        rv = nghttp2_session_get_stream_remote_close(ps->session, stream_id);
+        RETVAL = rv < 0 ? &PL_sv_undef : newSViv(rv);
+    OUTPUT:
+        RETVAL
+
+# Query whether the local peer half closed a stream.
+# Returns 1 or 0, or undef when no such stream exists.
+SV *
+get_stream_local_close(self, stream_id)
+        SV *self
+        int stream_id
+    PREINIT:
+        nghttp2_perl_session *ps;
+        int rv;
+    CODE:
+        ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        rv = nghttp2_session_get_stream_local_close(ps->session, stream_id);
+        RETVAL = rv < 0 ? &PL_sv_undef : newSViv(rv);
+    OUTPUT:
+        RETVAL
+
 # Terminate session with GOAWAY
 int
 terminate_session(self, error_code)
@@ -1411,7 +1607,6 @@ _new_client_xs(class, callbacks_hv, user_data)
         nghttp2_perl_session *ps;
         nghttp2_session_callbacks *callbacks;
         int rv;
-        SV **svp;
     CODE:
         /* Allocate our wrapper structure */
         Newxz(ps, 1, nghttp2_perl_session);
@@ -1427,44 +1622,18 @@ _new_client_xs(class, callbacks_hv, user_data)
         }
 
         /* Extract callbacks from hash */
-        if (callbacks_hv) {
-            if ((svp = hv_fetch(callbacks_hv, "on_begin_headers", 16, 0))) {
-                ps->cb_on_begin_headers = newSVsv(*svp);
-            }
-            if ((svp = hv_fetch(callbacks_hv, "on_header", 9, 0))) {
-                ps->cb_on_header = newSVsv(*svp);
-            }
-            if ((svp = hv_fetch(callbacks_hv, "on_frame_recv", 13, 0))) {
-                ps->cb_on_frame_recv = newSVsv(*svp);
-            }
-            if ((svp = hv_fetch(callbacks_hv, "on_data_chunk_recv", 18, 0))) {
-                ps->cb_on_data_chunk_recv = newSVsv(*svp);
-            }
-            if ((svp = hv_fetch(callbacks_hv, "on_stream_close", 15, 0))) {
-                ps->cb_on_stream_close = newSVsv(*svp);
-            }
-        }
+        extract_perl_callbacks(aTHX_ ps, callbacks_hv);
 
         /* Create nghttp2 callbacks */
         nghttp2_session_callbacks_new(&callbacks);
-        nghttp2_session_callbacks_set_send_callback(callbacks, perl_send_callback);
-        nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks, perl_on_begin_headers_callback);
-        nghttp2_session_callbacks_set_on_header_callback(callbacks, perl_on_header_callback);
-        nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, perl_on_frame_recv_callback);
-        nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, perl_on_data_chunk_recv_callback);
-        nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, perl_on_stream_close_callback);
+        register_nghttp2_callbacks(callbacks);
 
         /* Create CLIENT session (difference from server) */
         rv = nghttp2_session_client_new(&ps->session, callbacks, ps);
         nghttp2_session_callbacks_del(callbacks);
 
         if (rv != 0) {
-            if (ps->user_data) SvREFCNT_dec(ps->user_data);
-            if (ps->cb_on_begin_headers) SvREFCNT_dec(ps->cb_on_begin_headers);
-            if (ps->cb_on_header) SvREFCNT_dec(ps->cb_on_header);
-            if (ps->cb_on_frame_recv) SvREFCNT_dec(ps->cb_on_frame_recv);
-            if (ps->cb_on_data_chunk_recv) SvREFCNT_dec(ps->cb_on_data_chunk_recv);
-            if (ps->cb_on_stream_close) SvREFCNT_dec(ps->cb_on_stream_close);
+            release_perl_callbacks(aTHX_ ps);
             free(ps->send_buf);
             Safefree(ps);
             croak("nghttp2_session_client_new failed: %s", nghttp2_strerror(rv));
@@ -1565,6 +1734,34 @@ submit_rst_stream(self, stream_id, error_code)
         rv = nghttp2_submit_rst_stream(ps->session, NGHTTP2_FLAG_NONE, stream_id, error_code);
         if (rv != 0) {
             croak("nghttp2_submit_rst_stream failed: %s", nghttp2_strerror(rv));
+        }
+        RETVAL = rv;
+    OUTPUT:
+        RETVAL
+
+# Submit GOAWAY frame
+int
+_submit_goaway_xs(self, last_stream_id, error_code, opaque_data)
+        SV *self
+        int last_stream_id
+        unsigned int error_code
+        SV *opaque_data
+    PREINIT:
+        nghttp2_perl_session *ps;
+        STRLEN len = 0;
+        const uint8_t *data = NULL;
+        int rv;
+    CODE:
+        ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+
+        if (SvOK(opaque_data)) {
+            data = (const uint8_t *)SvPVbyte(opaque_data, len);
+        }
+
+        rv = nghttp2_submit_goaway(ps->session, NGHTTP2_FLAG_NONE,
+                                   last_stream_id, error_code, data, len);
+        if (rv != 0) {
+            croak("nghttp2_submit_goaway failed: %s", nghttp2_strerror(rv));
         }
         RETVAL = rv;
     OUTPUT:

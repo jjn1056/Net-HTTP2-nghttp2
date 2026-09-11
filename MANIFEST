@@ -25,5 +25,11 @@ t/20-streaming-request.t
 t/21-submit-data.t
 t/22-rst-rate-limit.t
 t/23-trailers.t
+t/24-frame-send.t
+t/25-frame-not-send.t
+t/26-stream-close-queries.t
+t/27-invalid-frame-and-error.t
+t/28-goaway.t
 t/lib/Test/HTTP2/Frame.pm
 t/lib/Test/HTTP2/HPACK.pm
+t/lib/Test/HTTP2/Pair.pm
