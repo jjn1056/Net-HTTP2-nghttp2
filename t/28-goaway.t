@@ -105,4 +105,23 @@ subtest 'last_stream_id is required' => sub {
         'omitting last_stream_id is refused');
 };
 
+subtest 'last_stream_id must be in range' => sub {
+    my ($client, $server, $stream_id, $seen, $wire) = goaway_pair('/range');
+
+    eval { $server->submit_goaway(last_stream_id => -1) };
+    like($@, qr/submit_goaway: last_stream_id must be an integer in 0 \.\. 0x7FFFFFFF/,
+        'a negative last_stream_id is refused');
+
+    eval { $server->submit_goaway(last_stream_id => 2**33) };
+    like($@, qr/submit_goaway: last_stream_id must be an integer in 0 \.\. 0x7FFFFFFF/,
+        'an oversized last_stream_id is refused');
+
+    is($server->submit_goaway(last_stream_id => 0x7FFFFFFF), 0,
+        'the maximum in-range last_stream_id is accepted');
+
+    eval { $server->submit_goaway(last_stream_id => 4) };
+    like($@, qr/nghttp2_submit_goaway failed/,
+        'an even last_stream_id on a server session still fails the parity check');
+};
+
 done_testing;

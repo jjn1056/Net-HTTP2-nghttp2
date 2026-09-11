@@ -175,6 +175,9 @@ sub submit_goaway {
     my $last_stream_id = delete $args{last_stream_id};
     croak 'submit_goaway: last_stream_id is required'
         unless defined $last_stream_id;
+    croak 'submit_goaway: last_stream_id must be an integer in 0 .. 0x7FFFFFFF'
+        unless $last_stream_id =~ /\A-?\d+\z/
+            && $last_stream_id >= 0 && $last_stream_id <= 0x7FFFFFFF;
 
     my $error_code  = delete($args{error_code}) // Net::HTTP2::nghttp2::NGHTTP2_NO_ERROR();
     my $opaque_data = delete $args{opaque_data};
@@ -625,7 +628,8 @@ Required. The highest peer-initiated stream this session will still process.
 It must be a stream the peer could have opened: odd or zero for a server
 session, even or zero for a client session. HTTP/2 forbids raising this value
 once announced, so nghttp2 sends the lower of this value and any previously
-sent one.
+sent one. Must be an integer in C<0 .. 0x7FFFFFFF>; anything outside that
+range is refused before it reaches nghttp2.
 
 =item error_code
 
@@ -633,7 +637,9 @@ An HTTP/2 wire error code. Defaults to C<NGHTTP2_NO_ERROR>.
 
 =item opaque_data
 
-Optional debug data carried with the frame, copied at submission time.
+Optional debug data carried with the frame, copied at submission time. Must
+be a byte string (octets), not a decoded character string; a wide-character
+string croaks.
 
 =back
 
