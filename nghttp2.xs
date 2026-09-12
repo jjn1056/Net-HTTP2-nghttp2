@@ -214,12 +214,24 @@ static void defer_free_data_provider(pTHX_ nghttp2_perl_session *ps,
     ps->pending_free[ps->pending_free_count++] = dp;
 }
 
+/* Freeing a provider drops the last reference to its Perl callback_data, so a
+   DESTROY runs here and may re-enter the session and drain again. Take the list
+   off the session first: the nested drain then sees an empty list instead of
+   freeing these entries a second time, and an append from the nested call
+   cannot realloc the array this loop is walking. */
 static void drain_pending_free(pTHX_ nghttp2_perl_session *ps) {
+    nghttp2_perl_data_provider **list = ps->pending_free;
+    int count = ps->pending_free_count;
     int i;
-    for (i = 0; i < ps->pending_free_count; i++) {
-        free_data_provider(aTHX_ ps->pending_free[i]);
-    }
+
+    ps->pending_free = NULL;
     ps->pending_free_count = 0;
+    ps->pending_free_cap = 0;
+
+    for (i = 0; i < count; i++) {
+        free_data_provider(aTHX_ list[i]);
+    }
+    if (list) free(list);
 }
 
 static void remove_data_provider(nghttp2_perl_session *ps, int32_t stream_id) {
@@ -1219,9 +1231,14 @@ mem_recv(self, data)
         }
         buf = SvPVbyte(data, len);
 
+        /* A callback error is reported with warn(), outside the eval that traps
+           the callback, so a $SIG{__WARN__} that throws unwinds past the clear.
+           The save stack restores the flag on every exit, C or Perl. */
+        ENTER;
+        SAVEINT(ps->in_session_call);
         ps->in_session_call = 1;
         rv = nghttp2_session_mem_recv(ps->session, (const uint8_t *)buf, len);
-        ps->in_session_call = 0;
+        LEAVE;
         drain_pending_free(aTHX_ ps);
 
         if (rv < 0) {
@@ -1248,9 +1265,13 @@ mem_send(self)
         ps->send_buf_len = 0;
 
         /* Trigger send callback to fill buffer */
+        /* See mem_recv: the flag must survive a Perl-level unwind out of the
+           session call. */
+        ENTER;
+        SAVEINT(ps->in_session_call);
         ps->in_session_call = 1;
         rv = nghttp2_session_send(ps->session);
-        ps->in_session_call = 0;
+        LEAVE;
         drain_pending_free(aTHX_ ps);
 
         if (rv != 0) {

@@ -31,6 +31,8 @@ t/27-invalid-frame-and-error.t
 t/28-goaway.t
 t/29-reset-inside-frame-send.t
 t/30-reentrancy.t
+t/31-pending-free-reentry.t
+t/32-callback-unwind-restores-session.t
 t/lib/Test/HTTP2/Frame.pm
 t/lib/Test/HTTP2/HPACK.pm
 t/lib/Test/HTTP2/Pair.pm
