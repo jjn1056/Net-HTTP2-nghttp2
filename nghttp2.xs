@@ -660,6 +660,30 @@ static int perl_on_frame_not_send_callback(nghttp2_session *session,
     AV *args;
     int ret;
 
+    /* A response or trailer HEADERS discarded for a stream nghttp2 no longer
+       has is the end of that stream's story: on_stream_close already ran, so
+       nothing else will release the provider the submit registered, and
+       nothing will ever read it. A HEADERS refused while the stream is still
+       there is a different thing -- the stream is live and its provider is
+       still feeding the response half -- so the release keys on the stream
+       being gone, not on the frame being discarded.
+
+       nghttp2.h, on the existence test used here:
+
+         Returns 1 if remote peer half closed the given stream |stream_id|.
+         Returns 0 if it did not.  Returns -1 if no such stream exists.
+
+       nghttp2_session_get_stream_user_data cannot answer this question: it
+       returns NULL both for a missing stream and for a live stream that has no
+       user data, which on a server is every stream the peer opened.
+
+       remove_data_provider defers the free while a session call is in
+       progress, which it always is here. */
+    if (frame->hd.type == NGHTTP2_HEADERS &&
+        nghttp2_session_get_stream_remote_close(session, frame->hd.stream_id) < 0) {
+        remove_data_provider(ps, frame->hd.stream_id);
+    }
+
     if (!ps->cb_on_frame_not_send || !SvOK(ps->cb_on_frame_not_send)) {
         return 0;
     }

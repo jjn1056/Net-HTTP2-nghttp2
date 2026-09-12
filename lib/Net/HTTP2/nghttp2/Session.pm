@@ -813,6 +813,14 @@ C<NGHTTP2_ERR_STREAM_CLOSING>. Optional.
 nghttp2 reports only non-DATA frames here. A pending DATA frame dropped by a
 reset produces no call, so silence is not proof that a body was delivered.
 
+A response submitted for a stream that was already closed is accepted by
+nghttp2 and discarded here with C<NGHTTP2_ERR_STREAM_CLOSED>. No
+C<on_stream_close> follows, because the stream closed before the response was
+submitted, so the body provider is released at this point instead. As with any
+release during a session call, the C<callback_data> is destroyed when the
+C<mem_send> or C<mem_recv> driving the flush returns. A discarded frame whose
+stream is still open leaves that stream's provider alone.
+
 =head2 on_invalid_frame_recv
 
     sub { my ($frame_hashref, $lib_error_code) = @_; return 0; }
