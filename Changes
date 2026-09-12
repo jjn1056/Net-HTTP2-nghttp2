@@ -11,6 +11,21 @@ Revision history for Net-HTTP2-nghttp2
           processed, recursing until the C stack was exhausted.
         - Check nghttp2_session_callbacks_new for failure instead of using an
           uninitialized callbacks pointer.
+        - Every session method now croaks once the session has been destroyed.
+          Teardown clears the nghttp2 handle before releasing the providers and
+          callbacks that run Perl destructors, so a destructor that calls back
+          into the dying session is refused instead of dereferencing a deleted
+          session.
+        - A data provider belongs to the session only after its submit
+          succeeded. A failed nghttp2_submit_response or nghttp2_submit_request
+          now releases the provider before croaking, instead of unlinking
+          whichever provider happened to share the stream id.
+        - A stream carries at most one body provider. A second streaming
+          response on a stream that already has one is refused by name; nghttp2
+          accepted it and left the loser orphaned under the same stream id.
+        - Document that a provider released during a session call that ends by
+          a Perl exception is reclaimed by the next session call or by DESTROY,
+          not immediately.
 
 0.010   2026-09-11
         - Add send-side lifecycle callbacks: on_frame_send reports each frame

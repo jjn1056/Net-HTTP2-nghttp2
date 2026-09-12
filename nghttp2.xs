@@ -54,6 +54,16 @@ typedef struct {
     int pending_free_cap;
 } nghttp2_perl_session;
 
+/* Every method reaches nghttp2 through ps->session. DESTROY clears that pointer
+   before it releases anything that can run Perl, so a Perl destructor that calls
+   back into the session being torn down is refused here rather than handed a
+   deleted nghttp2_session. */
+#define SESSION_ALIVE_OR_CROAK(ps) STMT_START {                               \
+        if (!(ps) || !(ps)->session) {                                        \
+            croak("Net::HTTP2::nghttp2::Session: session has been destroyed"); \
+        }                                                                     \
+    } STMT_END
+
 /* Forward declarations */
 static ssize_t perl_send_callback(nghttp2_session *session,
                                   const uint8_t *data, size_t length,
@@ -166,8 +176,23 @@ static nghttp2_perl_data_provider *find_data_provider(nghttp2_perl_session *ps, 
     return NULL;
 }
 
-static void add_data_provider(nghttp2_perl_session *ps, nghttp2_perl_data_provider *dp) {
+/* One provider per stream id. A second one would leave nghttp2 holding two data
+   sources for the same stream while stream close reclaims only the first, and
+   the loser would sit in the array keyed to a stream that can never free it.
+   Submit paths check this before handing the descriptor to nghttp2; the check
+   inside add_data_provider stands as the invariant, and reaching it there would
+   mean stranding a provider nghttp2 has already taken. */
+static void assert_stream_has_no_provider(pTHX_ nghttp2_perl_session *ps,
+                                          int32_t stream_id) {
+    if (find_data_provider(ps, stream_id)) {
+        croak("Net::HTTP2::nghttp2::Session: stream %d already has a data provider",
+              (int)stream_id);
+    }
+}
+
+static void add_data_provider(pTHX_ nghttp2_perl_session *ps, nghttp2_perl_data_provider *dp) {
     int i;
+    assert_stream_has_no_provider(aTHX_ ps, dp->stream_id);
     /* Find empty slot */
     for (i = 0; i < ps->data_providers_count; i++) {
         if (!ps->data_providers[i]) {
@@ -1199,6 +1224,10 @@ DESTROY(self)
             int i;
             if (ps->session) {
                 nghttp2_session_del(ps->session);
+                /* Releasing the callbacks and the providers below runs Perl
+                   destructors, which may call back in. From here on every
+                   method croaks instead of following this pointer. */
+                ps->session = NULL;
             }
             release_perl_callbacks(aTHX_ ps);
             if (ps->send_buf) free(ps->send_buf);
@@ -1226,6 +1255,7 @@ mem_recv(self, data)
         ssize_t rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         if (ps->in_session_call) {
             croak("mem_recv called from inside a session callback");
         }
@@ -1257,6 +1287,7 @@ mem_send(self)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         if (ps->in_session_call) {
             croak("mem_send called from inside a session callback");
         }
@@ -1295,6 +1326,7 @@ want_read(self)
         nghttp2_perl_session *ps;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         RETVAL = nghttp2_session_want_read(ps->session);
     OUTPUT:
         RETVAL
@@ -1307,6 +1339,7 @@ want_write(self)
         nghttp2_perl_session *ps;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         RETVAL = nghttp2_session_want_write(ps->session);
     OUTPUT:
         RETVAL
@@ -1324,6 +1357,7 @@ submit_settings(self, settings_hv)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         if ((svp = hv_fetch(settings_hv, "max_concurrent_streams", 22, 0))) {
             iv[niv].settings_id = NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS;
@@ -1386,6 +1420,7 @@ _submit_response_with_body(self, stream_id, headers_av, body)
         char *body_ptr;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
 
@@ -1417,6 +1452,7 @@ _submit_response_no_body(self, stream_id, headers_av)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
 
@@ -1443,6 +1479,7 @@ _submit_trailer_xs(self, stream_id, headers_av)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
 
         rv = nghttp2_submit_trailer(ps->session, stream_id, nva, nvlen);
@@ -1468,6 +1505,7 @@ resume_data(self, stream_id)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_session_resume_data(ps->session, stream_id);
         if (rv != 0 && rv != NGHTTP2_ERR_INVALID_ARGUMENT) {
             croak("nghttp2_session_resume_data failed: %s", nghttp2_strerror(rv));
@@ -1486,6 +1524,7 @@ get_stream_user_data(self, stream_id)
         void *data;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         data = nghttp2_session_get_stream_user_data(ps->session, stream_id);
         if (data) {
             RETVAL = newSVsv((SV *)data);
@@ -1506,6 +1545,7 @@ set_stream_user_data(self, stream_id, data)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         /* Note: caller must ensure data SV survives */
         rv = nghttp2_session_set_stream_user_data(ps->session, stream_id,
                                                    SvOK(data) ? newSVsv(data) : NULL);
@@ -1524,6 +1564,7 @@ get_stream_remote_close(self, stream_id)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_session_get_stream_remote_close(ps->session, stream_id);
         RETVAL = rv < 0 ? &PL_sv_undef : newSViv(rv);
     OUTPUT:
@@ -1540,6 +1581,7 @@ get_stream_local_close(self, stream_id)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_session_get_stream_local_close(ps->session, stream_id);
         RETVAL = rv < 0 ? &PL_sv_undef : newSViv(rv);
     OUTPUT:
@@ -1555,6 +1597,7 @@ terminate_session(self, error_code)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_session_terminate_session(ps->session, error_code);
         RETVAL = rv;
     OUTPUT:
@@ -1582,6 +1625,8 @@ _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_d
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
+        assert_stream_has_no_provider(aTHX_ ps, stream_id);
 
         nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
 
@@ -1595,9 +1640,6 @@ _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_d
         dp->eof = 0;
         dp->deferred = 0;
 
-        /* Track the data provider */
-        add_data_provider(ps, dp);
-
         /* Set up nghttp2 data provider */
         data_prd.source.ptr = dp;
         data_prd.read_callback = perl_data_source_read_callback;
@@ -1607,9 +1649,15 @@ _submit_response_streaming(self, stream_id, headers_av, data_callback, cb_user_d
         if (nva) Safefree(nva);
 
         if (rv != 0) {
-            remove_data_provider(ps, stream_id);
+            /* nghttp2 copies the descriptor only when the submit succeeds, so a
+               failure leaves the provider ours. No session call is running here,
+               so there is nothing to hold it past. */
+            free_data_provider(aTHX_ dp);
             croak("nghttp2_submit_response failed: %s", nghttp2_strerror(rv));
         }
+
+        /* The session owns the provider from here on. */
+        add_data_provider(aTHX_ ps, dp);
         RETVAL = rv;
     OUTPUT:
         RETVAL
@@ -1633,6 +1681,7 @@ submit_data(self, stream_id, data_sv, eof, no_end_stream = 0)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         dp = find_data_provider(ps, stream_id);
         if (!dp) {
@@ -1767,6 +1816,7 @@ _submit_request_xs(self, headers_av, body_sv)
         STRLEN body_len = 0;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
 
@@ -1805,18 +1855,17 @@ _submit_request_xs(self, headers_av, body_sv)
         if (nva) Safefree(nva);
 
         if (stream_id < 0) {
+            /* The session never took the provider; see _submit_response_streaming. */
             if (dp) {
-                if (dp->callback) SvREFCNT_dec(dp->callback);
-                if (dp->user_data) SvREFCNT_dec(dp->user_data);
-                Safefree(dp);
+                free_data_provider(aTHX_ dp);
             }
             croak("nghttp2_submit_request failed: %s", nghttp2_strerror(stream_id));
         }
 
-        /* Track data provider if we have one */
+        /* The session owns the provider from here on. */
         if (dp) {
             dp->stream_id = stream_id;
-            add_data_provider(ps, dp);
+            add_data_provider(aTHX_ ps, dp);
         }
 
         RETVAL = stream_id;
@@ -1834,6 +1883,7 @@ submit_rst_stream(self, stream_id, error_code)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_submit_rst_stream(ps->session, NGHTTP2_FLAG_NONE, stream_id, error_code);
         if (rv != 0) {
             croak("nghttp2_submit_rst_stream failed: %s", nghttp2_strerror(rv));
@@ -1856,6 +1906,7 @@ _submit_goaway_xs(self, last_stream_id, error_code, opaque_data)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
 
         if (SvOK(opaque_data)) {
             data = (const uint8_t *)SvPVbyte(opaque_data, len);
@@ -1884,6 +1935,7 @@ submit_ping(self, ack, opaque_data)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         flags = ack ? NGHTTP2_FLAG_ACK : NGHTTP2_FLAG_NONE;
 
         if (SvOK(opaque_data)) {
@@ -1914,6 +1966,7 @@ submit_window_update(self, stream_id, window_size_increment)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        SESSION_ALIVE_OR_CROAK(ps);
         rv = nghttp2_submit_window_update(ps->session, NGHTTP2_FLAG_NONE, stream_id, window_size_increment);
         if (rv != 0) {
             croak("nghttp2_submit_window_update failed: %s", nghttp2_strerror(rv));

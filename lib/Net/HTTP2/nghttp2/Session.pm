@@ -509,6 +509,10 @@ Optional user data passed as third argument to the streaming callback.
 
 =back
 
+A stream carries at most one body provider. Submitting a second response with a
+body on a stream that already has one croaks with C<stream N already has a data
+provider>, leaving the response already in flight untouched.
+
 =head2 submit_trailer
 
     $session->submit_trailer(
@@ -841,5 +845,14 @@ C<mem_send> and C<mem_recv> drive the flush, so calling either from inside a
 callback croaks with C<mem_send called from inside a session callback> or
 C<mem_recv called from inside a session callback>. Catching that exception
 leaves the session usable; the flush already under way continues normally.
+
+A provider released during a session call that ends by a Perl exception is
+reclaimed by the next session call or by C<DESTROY>, not immediately.
+
+Destroying the session ends it for every method. Releasing the providers it
+still owns runs their C<callback_data> destructors, and a destructor that calls
+back into the session it is being torn down with croaks with
+C<Net::HTTP2::nghttp2::Session: session has been destroyed> rather than reaching
+a session nghttp2 has already deleted.
 
 =cut

@@ -33,6 +33,8 @@ t/29-reset-inside-frame-send.t
 t/30-reentrancy.t
 t/31-pending-free-reentry.t
 t/32-callback-unwind-restores-session.t
+t/33-destroy-order.t
+t/34-provider-ownership.t
 t/lib/Test/HTTP2/Frame.pm
 t/lib/Test/HTTP2/HPACK.pm
 t/lib/Test/HTTP2/Pair.pm
