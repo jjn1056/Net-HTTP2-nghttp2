@@ -40,3 +40,6 @@ t/36-rapid-reset-response.t
 t/lib/Test/HTTP2/Frame.pm
 t/lib/Test/HTTP2/HPACK.pm
 t/lib/Test/HTTP2/Pair.pm
+xt/lib/Test/HTTP2/LoadServer.pm
+xt/load-h2load.t
+xt/load-nghttp-reset.t

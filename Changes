@@ -30,6 +30,11 @@ Revision history for Net-HTTP2-nghttp2
           stream was already closed. A server answering a stream the peer had
           just reset held that response's data provider and its callback_data
           until the session was destroyed: one leak per reset.
+        - The example h2spec-server exercises the send-side callbacks: frame
+          counters under --stats, an /early endpoint that answers before the
+          request body and resets the request half from on_frame_send, a
+          /stream endpoint, and a GOAWAY shutdown on SIGTERM. Author load
+          tests for it live under xt/.
 
 0.010   2026-09-11
         - Add send-side lifecycle callbacks: on_frame_send reports each frame
