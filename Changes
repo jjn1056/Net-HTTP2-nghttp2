@@ -37,6 +37,9 @@ Revision history for Net-HTTP2-nghttp2
           tests for it live under xt/.
         - submit_push_promise removed: it never had an XS implementation and
           could not be called.
+        - Remove the unused _submit_response_with_body XS function, a stub from the
+          first commit that accepted a body and submitted headers only; static
+          bodies have always gone through the streaming provider.
 
 0.010   2026-09-11
         - Add send-side lifecycle callbacks: on_frame_send reports each frame

@@ -1427,42 +1427,6 @@ submit_settings(self, settings_hv)
     OUTPUT:
         RETVAL
 
-# Submit response (simple version with static body)
-int
-_submit_response_with_body(self, stream_id, headers_av, body)
-        SV *self
-        int stream_id
-        AV *headers_av
-        SV *body
-    PREINIT:
-        nghttp2_perl_session *ps;
-        nghttp2_nv *nva;
-        size_t nvlen;
-        nghttp2_data_provider data_prd;
-        int rv;
-        STRLEN body_len;
-        char *body_ptr;
-    CODE:
-        ps = (nghttp2_perl_session *)SvIV(SvRV(self));
-        SESSION_ALIVE_OR_CROAK(ps);
-
-        nva = perl_headers_to_nva(aTHX_ headers_av, &nvlen);
-
-        /* For now, submit without data provider (headers only) */
-        /* TODO: Implement proper data provider for body */
-        body_ptr = SvPVbyte(body, body_len);
-
-        rv = nghttp2_submit_response(ps->session, stream_id, nva, nvlen, NULL);
-
-        if (nva) Safefree(nva);
-
-        if (rv != 0) {
-            croak("nghttp2_submit_response failed: %s", nghttp2_strerror(rv));
-        }
-        RETVAL = rv;
-    OUTPUT:
-        RETVAL
-
 # Submit response without body
 int
 _submit_response_no_body(self, stream_id, headers_av)
