@@ -20,6 +20,7 @@ typedef struct {
     int eof;                /* End of data flag */
     int no_end_stream;      /* Suppress END_STREAM at EOF */
     int deferred;           /* Currently deferred */
+    int released;           /* Stream closed; awaiting free, do not touch Perl data */
 } nghttp2_perl_data_provider;
 
 /* Session wrapper structure */
@@ -45,6 +46,12 @@ typedef struct {
     nghttp2_perl_data_provider **data_providers;
     int data_providers_count;
     int data_providers_cap;
+    /* Nonzero while nghttp2 is running callbacks for this session */
+    int in_session_call;
+    /* Providers unlinked during a session call, freed when it returns */
+    nghttp2_perl_data_provider **pending_free;
+    int pending_free_count;
+    int pending_free_cap;
 } nghttp2_perl_session;
 
 /* Forward declarations */
@@ -180,16 +187,54 @@ static void add_data_provider(nghttp2_perl_session *ps, nghttp2_perl_data_provid
     ps->data_providers[ps->data_providers_count++] = dp;
 }
 
+static void free_data_provider(pTHX_ nghttp2_perl_data_provider *dp) {
+    if (dp->callback) SvREFCNT_dec(dp->callback);
+    if (dp->user_data) SvREFCNT_dec(dp->user_data);
+    Safefree(dp);
+}
+
+/* Hold a released provider until the running session call returns. nghttp2
+   still owns the outbound item whose data source points at it, and the header
+   promises nothing about that pointer's lifetime past on_stream_close. */
+static void defer_free_data_provider(pTHX_ nghttp2_perl_session *ps,
+                                     nghttp2_perl_data_provider *dp) {
+    if (ps->pending_free_count >= ps->pending_free_cap) {
+        int new_cap = ps->pending_free_cap ? ps->pending_free_cap * 2 : 4;
+        nghttp2_perl_data_provider **grown =
+            (nghttp2_perl_data_provider **)realloc(
+                ps->pending_free, new_cap * sizeof(nghttp2_perl_data_provider *));
+        if (!grown) {
+            /* Nowhere to park it; freeing now beats losing the list. */
+            free_data_provider(aTHX_ dp);
+            return;
+        }
+        ps->pending_free = grown;
+        ps->pending_free_cap = new_cap;
+    }
+    ps->pending_free[ps->pending_free_count++] = dp;
+}
+
+static void drain_pending_free(pTHX_ nghttp2_perl_session *ps) {
+    int i;
+    for (i = 0; i < ps->pending_free_count; i++) {
+        free_data_provider(aTHX_ ps->pending_free[i]);
+    }
+    ps->pending_free_count = 0;
+}
+
 static void remove_data_provider(nghttp2_perl_session *ps, int32_t stream_id) {
     dTHX;
     int i;
     for (i = 0; i < ps->data_providers_count; i++) {
         if (ps->data_providers[i] && ps->data_providers[i]->stream_id == stream_id) {
             nghttp2_perl_data_provider *dp = ps->data_providers[i];
-            if (dp->callback) SvREFCNT_dec(dp->callback);
-            if (dp->user_data) SvREFCNT_dec(dp->user_data);
-            Safefree(dp);
             ps->data_providers[i] = NULL;
+            dp->released = 1;
+            if (ps->in_session_call) {
+                defer_free_data_provider(aTHX_ ps, dp);
+            } else {
+                free_data_provider(aTHX_ dp);
+            }
             return;
         }
     }
@@ -249,6 +294,13 @@ static ssize_t perl_data_source_read_callback(
     ssize_t ret = 0;
 
     if (!dp) {
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+        return 0;
+    }
+
+    /* The stream closed while nghttp2 still held this data source. The Perl
+       callback and body are spoken for, so end the body without touching them. */
+    if (dp->released) {
         *data_flags |= NGHTTP2_DATA_FLAG_EOF;
         return 0;
     }
@@ -315,7 +367,12 @@ static ssize_t perl_data_source_read_callback(
     count = call_sv(dp->callback, G_ARRAY | G_EVAL);
     SPAGAIN;
 
-    if (SvTRUE(ERRSV)) {
+    if (dp->released) {
+        /* The callback closed its own stream. The provider is awaiting free,
+           so discard the body rather than record state on it. */
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+        ret = 0;
+    } else if (SvTRUE(ERRSV)) {
         /* Callback threw an exception */
         warn("nghttp2 data provider callback error: %s", SvPV_nolen(ERRSV));
         ret = NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -1065,7 +1122,13 @@ _new_server_xs(class, callbacks_hv, user_data, ...)
         extract_perl_callbacks(aTHX_ ps, callbacks_hv);
 
         /* Create nghttp2 callbacks */
-        nghttp2_session_callbacks_new(&callbacks);
+        rv = nghttp2_session_callbacks_new(&callbacks);
+        if (rv != 0) {
+            release_perl_callbacks(aTHX_ ps);
+            free(ps->send_buf);
+            Safefree(ps);
+            croak("nghttp2_session_callbacks_new failed: %s", nghttp2_strerror(rv));
+        }
         register_nghttp2_callbacks(callbacks);
 
         /* Create session — use new2 with options if provided */
@@ -1127,13 +1190,12 @@ DESTROY(self)
             }
             release_perl_callbacks(aTHX_ ps);
             if (ps->send_buf) free(ps->send_buf);
-            /* Clean up data providers */
+            /* Clean up data providers, released ones included */
+            drain_pending_free(aTHX_ ps);
+            if (ps->pending_free) free(ps->pending_free);
             for (i = 0; i < ps->data_providers_count; i++) {
                 if (ps->data_providers[i]) {
-                    nghttp2_perl_data_provider *dp = ps->data_providers[i];
-                    if (dp->callback) SvREFCNT_dec(dp->callback);
-                    if (dp->user_data) SvREFCNT_dec(dp->user_data);
-                    Safefree(dp);
+                    free_data_provider(aTHX_ ps->data_providers[i]);
                 }
             }
             if (ps->data_providers) free(ps->data_providers);
@@ -1152,9 +1214,16 @@ mem_recv(self, data)
         ssize_t rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        if (ps->in_session_call) {
+            croak("mem_recv called from inside a session callback");
+        }
         buf = SvPVbyte(data, len);
 
+        ps->in_session_call = 1;
         rv = nghttp2_session_mem_recv(ps->session, (const uint8_t *)buf, len);
+        ps->in_session_call = 0;
+        drain_pending_free(aTHX_ ps);
+
         if (rv < 0) {
             croak("nghttp2_session_mem_recv failed: %s", nghttp2_strerror((int)rv));
         }
@@ -1171,12 +1240,19 @@ mem_send(self)
         int rv;
     CODE:
         ps = (nghttp2_perl_session *)SvIV(SvRV(self));
+        if (ps->in_session_call) {
+            croak("mem_send called from inside a session callback");
+        }
 
         /* Clear send buffer */
         ps->send_buf_len = 0;
 
         /* Trigger send callback to fill buffer */
+        ps->in_session_call = 1;
         rv = nghttp2_session_send(ps->session);
+        ps->in_session_call = 0;
+        drain_pending_free(aTHX_ ps);
+
         if (rv != 0) {
             croak("nghttp2_session_send failed: %s", nghttp2_strerror(rv));
         }
@@ -1625,7 +1701,13 @@ _new_client_xs(class, callbacks_hv, user_data)
         extract_perl_callbacks(aTHX_ ps, callbacks_hv);
 
         /* Create nghttp2 callbacks */
-        nghttp2_session_callbacks_new(&callbacks);
+        rv = nghttp2_session_callbacks_new(&callbacks);
+        if (rv != 0) {
+            release_perl_callbacks(aTHX_ ps);
+            free(ps->send_buf);
+            Safefree(ps);
+            croak("nghttp2_session_callbacks_new failed: %s", nghttp2_strerror(rv));
+        }
         register_nghttp2_callbacks(callbacks);
 
         /* Create CLIENT session (difference from server) */

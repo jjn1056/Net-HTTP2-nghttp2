@@ -1,5 +1,17 @@
 Revision history for Net-HTTP2-nghttp2
 
+0.011   2026-09-12
+        - Defer a data provider's release while a session call is running.
+          Closing a stream from inside a callback freed the provider that
+          nghttp2 still held as the outbound DATA item's data source; the
+          provider is now unlinked at once and freed when mem_send or
+          mem_recv returns.
+        - mem_send and mem_recv now croak when called from inside a session
+          callback. Re-entering them re-serialized the frame still being
+          processed, recursing until the C stack was exhausted.
+        - Check nghttp2_session_callbacks_new for failure instead of using an
+          uninitialized callbacks pointer.
+
 0.010   2026-09-11
         - Add send-side lifecycle callbacks: on_frame_send reports each frame
           as it is serialized, and on_frame_not_send reports a queued non-DATA

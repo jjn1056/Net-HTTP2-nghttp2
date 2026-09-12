@@ -830,8 +830,16 @@ C<$lib_error_code> rather than on C<$message>. Optional.
 =head2 Reentrancy
 
 A callback may queue further frames with the C<submit_*> methods, including
-from inside C<on_frame_send>; nghttp2 serializes them in order during the same
-flush. A callback must not call C<mem_send> or C<mem_recv>, which drive that
-flush and would reenter the session.
+from inside C<on_frame_send>. nghttp2 serializes them in order during the same
+flush. That includes resetting the stream the current frame belongs to:
+C<submit_rst_stream> from inside a callback is supported, and the response body
+provider for a stream closed that way is held until the flush returns, so the
+reset is safe even while the provider still has data pending. Such a provider
+produces no further data, and its Perl callback is not invoked again.
+
+C<mem_send> and C<mem_recv> drive the flush, so calling either from inside a
+callback croaks with C<mem_send called from inside a session callback> or
+C<mem_recv called from inside a session callback>. Catching that exception
+leaves the session usable; the flush already under way continues normally.
 
 =cut
