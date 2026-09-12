@@ -35,6 +35,8 @@ Revision history for Net-HTTP2-nghttp2
           request body and resets the request half from on_frame_send, a
           /stream endpoint, and a GOAWAY shutdown on SIGTERM. Author load
           tests for it live under xt/.
+        - submit_push_promise removed: it never had an XS implementation and
+          could not be called.
 
 0.010   2026-09-11
         - Add send-side lifecycle callbacks: on_frame_send reports each frame

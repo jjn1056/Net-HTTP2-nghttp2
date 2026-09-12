@@ -192,27 +192,6 @@ sub resume_stream {
     return $self->resume_data($stream_id);
 }
 
-# High-level push promise submission
-sub submit_push_promise {
-    my ($self, $stream_id, %args) = @_;
-
-    my $method  = delete $args{method} // 'GET';
-    my $path    = delete $args{path} or croak "path required for push promise";
-    my $scheme  = delete $args{scheme} // 'https';
-    my $authority = delete $args{authority};
-    my $headers = delete $args{headers} // [];
-
-    my @nv = (
-        [':method', $method],
-        [':path', $path],
-        [':scheme', $scheme],
-    );
-    push @nv, [':authority', $authority] if defined $authority;
-    push @nv, @$headers;
-
-    return $self->_submit_push_promise_xs($stream_id, \@nv);
-}
-
 1;
 
 __END__
@@ -541,12 +520,6 @@ terminal HEADERS block.
 A zero return means nghttp2 accepted the trailer block into its outbound
 queue. It does not mean the peer has received it. Invalid Perl input and
 immediate nghttp2 submission errors throw exceptions.
-
-=head2 submit_push_promise
-
-    my $promised_stream_id = $session->submit_push_promise($stream_id, %args);
-
-Submit a server push promise.
 
 =head2 submit_data
 

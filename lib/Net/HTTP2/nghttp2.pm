@@ -527,7 +527,7 @@ the HTTP/2 conformance testing tool.
 
 =item * HPACK - All header compression variants (indexed, literal, Huffman)
 
-=item * Server Push - PUSH_PROMISE handling
+=item * Server Push - a PUSH_PROMISE frame from a client is rejected
 
 =back
 
