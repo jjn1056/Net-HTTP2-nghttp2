@@ -1,5 +1,22 @@
 Revision history for Net-HTTP2-nghttp2
 
+        - A response body larger than one DATA frame is sent whole. A static
+          body given to submit_response, or a data callback returning more
+          than $max_length, kept one frame's worth, set END_STREAM and
+          dropped the rest: over HTTP/2, any body larger than 16384 bytes
+          (or than the peer's flow-control window) arrived cut short, with
+          no error. What a frame has no room for is now kept and sent first
+          on the next read, and END_STREAM waits for the last of it.
+        - Static bodies, submit_data and client request bodies are sent from
+          an offset into the bytes, not by copying what remains into a new
+          string for every frame: a 32 MB submit_data went from 7.2s to
+          0.05s. submit_data while earlier data is still unsent appends to
+          it rather than replacing it.
+        - t/25-frame-not-send.t's discarded-DATA case passed only because
+          the body was cut to the window and the stream ended before the
+          reset; it now holds the client's WINDOW_UPDATE back, so DATA is
+          really queued when the stream is reset, and checks it was.
+
 0.012   2026-10-16
         - submit_headers queues a HEADERS block on a stream, wrapping
           nghttp2_submit_headers, so a server can send a 1xx response such
