@@ -311,6 +311,26 @@ with a C<:protocol> pseudo-header.
         $client->close;
     }
 
+On a non-blocking socket, take only what the socket can accept now and leave
+the rest in the session. A peer that advertises a large flow-control window
+and then reads slowly would otherwise have every byte that window allows
+serialized into your process at once:
+
+    # Non-blocking: hand the socket only what it can take now, keep the rest in nghttp2.
+    my $pending = '';
+    sub flush_output {
+        while (1) {
+            if (length $pending) {
+                my $n = $client->syswrite($pending);
+                return unless defined $n;          # EAGAIN: wait for writability
+                substr($pending, 0, $n, '');
+                return if length $pending;
+            }
+            $pending = $session->mem_send(16384);
+            return unless length $pending;
+        }
+    }
+
 =head2 HTTP/2 Client (h2 - TLS)
 
     use IO::Socket::SSL;
